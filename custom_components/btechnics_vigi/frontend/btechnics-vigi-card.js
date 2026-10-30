@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.1";
+const VIGI_VERSION = "0.3.2";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -171,10 +171,13 @@ class BtechnicsVigiCard extends HTMLElement {
     const host = this.shadowRoot.getElementById("mlive");
     host.innerHTML = `<div class="status">Live beeld starten…</div>`;
     m.hidden = false;
+    // 1) WebRTC via go2rtc: meteen beeld. 2) terugval HLS (start pas na 12 s of meer, vastgesteld 30/10/2026)
+    if (await this._webrtc(ch, host)) return;
+    if (this._liveCh !== ch) return;
     try {
       const { url } = await this._hass.callWS({ type: "btechnics_vigi/live", channel: ch });
       const ok = await this._waitHls(url, () => this._liveCh === ch,
-        (s) => { const st = host.querySelector(".status"); if (st) st.textContent = `Live beeld starten… ${s} s (de eerste keer tot 15 s)`; });
+        (s) => { const st = host.querySelector(".status"); if (st) st.textContent = `Live beeld starten via HLS… ${s} s (tot 15 s)`; });
       if (this._liveCh !== ch) return;
       if (!ok) throw new Error("de camera antwoordt niet");
       host.innerHTML = "";
@@ -184,8 +187,48 @@ class BtechnicsVigiCard extends HTMLElement {
     }
   }
 
+  async _webrtc(ch, host) {
+    let pc;
+    try {
+      const { ice_servers } = await this._hass.callWS({ type: "btechnics_vigi/ice" });
+      pc = new RTCPeerConnection({ iceServers: ice_servers });
+      this._pc = pc;
+      pc.addTransceiver("video", { direction: "recvonly" });
+      const video = document.createElement("video");
+      video.muted = true; video.autoplay = true; video.playsInline = true; video.controls = true;
+      pc.ontrack = (ev) => { video.srcObject = ev.streams[0] || new MediaStream([ev.track]); };
+      await pc.setLocalDescription(await pc.createOffer());
+      // zonder trickle: wachten tot de kandidaten verzameld zijn (max 2 s)
+      await new Promise((res) => {
+        if (pc.iceGatheringState === "complete") return res();
+        const t = setTimeout(res, 2000);
+        pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); res(); } });
+      });
+      if (this._liveCh !== ch) { pc.close(); return true; }
+      const { answer } = await this._hass.callWS({ type: "btechnics_vigi/webrtc", channel: ch, offer: pc.localDescription.sdp });
+      await pc.setRemoteDescription({ type: "answer", sdp: answer });
+      const ok = await new Promise((res) => {
+        const t = setTimeout(() => res(false), 8000);
+        video.addEventListener("playing", () => { clearTimeout(t); res(true); }, { once: true });
+        pc.addEventListener("connectionstatechange", () => { if (pc.connectionState === "failed") { clearTimeout(t); res(false); } });
+        video.play().catch(() => {});
+        host.innerHTML = "";
+        host.appendChild(video);
+        const st = document.createElement("div"); st.className = "status"; st.textContent = "Verbinden…"; host.appendChild(st);
+        video.addEventListener("playing", () => st.remove(), { once: true });
+      });
+      if (!ok) { pc.close(); this._pc = null; host.innerHTML = `<div class="status">WebRTC lukt niet hier, live beeld via HLS…</div>`; }
+      return ok;
+    } catch (e) {
+      if (pc) pc.close();
+      this._pc = null;
+      return false;
+    }
+  }
+
   _closeLive() {
     this._liveCh = null;
+    if (this._pc) { try { this._pc.close(); } catch (e) { /* al dicht */ } this._pc = null; }
     const m = this.shadowRoot && this.shadowRoot.getElementById("modal");
     if (m) { m.hidden = true; this.shadowRoot.getElementById("mlive").innerHTML = ""; }
   }

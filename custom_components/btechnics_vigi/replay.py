@@ -89,3 +89,31 @@ class LiveManager:
         for s in self._streams.values():
             await _stop(s)
         self._streams.clear()
+
+    # ---- WebRTC via go2rtc (ingebouwd in HA sinds 2024.11) ----
+    # Live via HLS start pas na 2 segmenten van ca. 6 s (gemeten 30/10/2026: meer dan 12 s). Via go2rtc en WebRTC
+    # is het beeld er meteen, zonder camera-entiteit (die gaven gewone gebruikers camera.record).
+    def _go2rtc(self):
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession  # noqa: PLC0415
+        cfg = self.hass.data.get("go2rtc")
+        url = getattr(cfg, "url", None) or "http://localhost:11984/"
+        session = getattr(cfg, "session", None) or async_get_clientsession(self.hass)
+        return url.rstrip("/") + "/", session
+
+    async def webrtc_answer(self, channel: int, offer_sdp: str) -> str:
+        import aiohttp  # noqa: PLC0415
+        if "go2rtc" not in self.hass.config.components:
+            raise RuntimeError("go2rtc is niet actief in Home Assistant")
+        base, session = self._go2rtc()
+        name = f"btechnics_vigi_{self.client.host.replace('.', '_')}_{channel}"
+        src = self.client.live_url(channel, LIVE_STREAM)
+        to = aiohttp.ClientTimeout(total=15)
+        async with session.put(base + "api/streams", params={"name": name, "src": src}, timeout=to) as r:
+            if r.status >= 400:
+                raise RuntimeError(f"go2rtc stream aanmaken: HTTP {r.status}")
+        async with session.post(base + "api/webrtc", params={"src": name}, data=offer_sdp,
+                                headers={"Content-Type": "application/sdp"}, timeout=to) as r:
+            body = await r.text()
+            if r.status >= 400 or "v=0" not in body:
+                raise RuntimeError(f"go2rtc WebRTC: HTTP {r.status} {body[:120]}")
+            return body

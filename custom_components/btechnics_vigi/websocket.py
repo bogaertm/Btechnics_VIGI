@@ -29,7 +29,7 @@ def async_register_ws(hass: HomeAssistant) -> None:
     if hass.data.get(_REG):
         return
     hass.data[_REG] = True
-    for f in (ws_channels, ws_days, ws_search, ws_replay, ws_replay_stop, ws_live, ws_clip_start, ws_clip_status,
+    for f in (ws_channels, ws_days, ws_search, ws_replay, ws_replay_stop, ws_live, ws_webrtc, ws_ice, ws_clip_start, ws_clip_status,
               ws_probe, ws_replay_probe):
         websocket_api.async_register_command(hass, f)
 
@@ -137,6 +137,54 @@ async def ws_live(hass, connection, msg):
         connection.send_error(msg["id"], "live_error", str(e)[:200])
         return
     connection.send_result(msg["id"], {"url": url})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/webrtc", vol.Optional("entry_id"): str,
+                                  vol.Required("channel"): int, vol.Required("offer"): str})
+@websocket_api.async_response
+async def ws_webrtc(hass, connection, msg):
+    """Live via WebRTC: SDP-aanbod van de browser naar go2rtc, antwoord terug (zonder trickle)."""
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    if not c.channel(msg["channel"]):
+        connection.send_error(msg["id"], "not_found", "onbekend kanaal")
+        return
+    try:
+        answer = await c.live.webrtc_answer(msg["channel"], msg["offer"])
+    except Exception as e:  # noqa: BLE001
+        connection.send_error(msg["id"], "webrtc_error", str(e)[:200].replace(c.client.password_for_diagnose(), "***"))
+        return
+    ice = []
+    try:
+        from homeassistant.components.web_rtc import async_get_ice_servers  # noqa: PLC0415
+        for s in async_get_ice_servers(hass):
+            d = {"urls": s.urls}
+            if getattr(s, "username", None):
+                d.update(username=s.username, credential=s.credential)
+            ice.append(d)
+    except Exception:  # noqa: BLE001
+        pass
+    connection.send_result(msg["id"], {"answer": answer, "ice_servers": ice})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/ice", vol.Optional("entry_id"): str})
+@websocket_api.async_response
+async def ws_ice(hass, connection, msg):
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    ice = []
+    try:
+        from homeassistant.components.web_rtc import async_get_ice_servers  # noqa: PLC0415
+        for s in async_get_ice_servers(hass):
+            d = {"urls": s.urls}
+            if getattr(s, "username", None):
+                d.update(username=s.username, credential=s.credential)
+            ice.append(d)
+    except Exception:  # noqa: BLE001
+        ice = [{"urls": ["stun:stun.home-assistant.io:3478"]}]
+    connection.send_result(msg["id"], {"ice_servers": ice})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/clip/start", vol.Optional("entry_id"): str,

@@ -97,6 +97,8 @@ async def test_ws_rechten(hass, via_fake, hass_ws_client, hass_admin_user):
                 {"type": f"{DOMAIN}/replay", "channel": 1, "start": 1793350000},
                 {"type": f"{DOMAIN}/replay/stop"},
                 {"type": f"{DOMAIN}/live", "channel": 1},
+                {"type": f"{DOMAIN}/webrtc", "channel": 1, "offer": "v=0"},
+                {"type": f"{DOMAIN}/ice"},
                 {"type": f"{DOMAIN}/clip/start", "channel": 1, "start": 1793350000, "end": 1793350060},
                 {"type": f"{DOMAIN}/clip/status", "clip_id": "x"},
                 {"type": f"{DOMAIN}/probe", "path": "/openapi/module_list"},
