@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.4";
+const VIGI_VERSION = "0.3.5";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -700,6 +700,7 @@ class BtechnicsVigiCard extends HTMLElement {
     const v = this._cur && this._cur.video;
     if (v) v.playbackRate = s;
     this._markSpeed();
+    if (s >= 4 && this._cur && this._cur.mode === "file") this._prefetchNext();
   }
   _togglePlay() { const v = this._cur && this._cur.video; if (v) { if (v.paused) v.play().catch(() => {}); else v.pause(); } }
   _seekBy(d) {
@@ -741,8 +742,8 @@ class BtechnicsVigiCard extends HTMLElement {
     else this._setStatus(null, "Einde van de opnames op deze dag.");
   }
 
-  _nextWindow() {
-    const c = this._cur;
+  _nextWindow(from) {
+    const c = from || this._cur;
     if (!c) return null;
     if (c.end < c.seg.end - 1) return { seg: c.seg, start: c.end, end: Math.min(c.seg.end, c.end + 300) };
     const n = (this._segs || []).find((s) => s.start >= c.seg.end);
@@ -750,11 +751,13 @@ class BtechnicsVigiCard extends HTMLElement {
   }
 
   _prefetchNext() {
-    // het volgende venster alvast binnenhalen (zelfde grenzen als _play, dan hergebruikt de server het)
-    const w = this._nextWindow();
-    if (!w) return;
-    const parts = (w.seg.parts || [[w.seg.start, w.seg.end]]).filter((p) => p[1] > w.start && p[0] < w.end);
-    this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: w.start, end: w.end, parts }).catch(() => {});
+    // het volgende venster alvast binnenhalen (zelfde grenzen als _play, dan hergebruikt de server het).
+    // Vanaf 4x ook het venster daarna: de server haalt alles in volgorde binnen met max 3 replays (clips.py).
+    let w = this._nextWindow();
+    for (let i = 0; w && i < (this._speed >= 4 ? 2 : 1); i++, w = this._nextWindow(w)) {
+      const parts = (w.seg.parts || [[w.seg.start, w.seg.end]]).filter((p) => p[1] > w.start && p[0] < w.end);
+      this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: w.start, end: w.end, parts }).catch(() => {});
+    }
   }
 
   async _download() {
