@@ -1,0 +1,8 @@
+{
+  "config": {
+    "step": {"user": {"title": "VIGI recorder", "description": "IP van de recorder en een aparte gebruiker voor Home Assistant. De OpenAPI moet aan staan (Settings > Network > OpenAPI, poort 20443).",
+      "data": {"host": "IP-adres", "username": "Gebruiker", "password": "Wachtwoord"}}},
+    "error": {"invalid_auth": "Gebruiker of wachtwoord geweigerd door de recorder.", "cannot_connect": "Recorder niet bereikbaar op poort 20443 (staat de OpenAPI aan?)."},
+    "abort": {"already_configured": "Deze recorder is al toegevoegd."}
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "domain": "btechnics_vigi",
+  "name": "Btechnics VIGI",
+  "after_dependencies": ["http", "websocket_api"],
+  "dependencies": ["stream"],
+  "codeowners": ["@bogaertm"],
+  "config_flow": true,
+  "documentation": "https://github.com/bogaertm/Btechnics_VIGI",
+  "issue_tracker": "https://github.com/bogaertm/Btechnics_VIGI/issues",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "0.1.0"
+}
