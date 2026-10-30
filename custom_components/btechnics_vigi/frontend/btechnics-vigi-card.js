@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.0";
+const VIGI_VERSION = "0.2.1";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -95,6 +95,14 @@ class BtechnicsVigiCard extends HTMLElement {
     if (this._tab === "rec" && this._admin) this._renderRec(); else this._renderLive();
   }
 
+  _camName(entity) {
+    const s = this._hass.states[entity];
+    const ch = s && s.attributes.kanaal;
+    const c = (this._channels || []).find((x) => x.channel === ch);
+    if (c && c.name) return c.name;
+    return ((s && s.attributes.friendly_name) || entity).replace(/^VIGI recorder\s+/i, "");
+  }
+
   /* ---------------- Live ---------------- */
   _renderLive() {
     const body = this.shadowRoot.getElementById("body");
@@ -103,7 +111,7 @@ class BtechnicsVigiCard extends HTMLElement {
     body.innerHTML = `<div class="grid">${cams.map((c) => `
       <div class="tile" data-e="${esc(c.entity)}">
         <div class="img"><img alt="" data-e="${esc(c.entity)}"><span class="off">Niet bereikbaar</span></div>
-        <div class="cap"><span class="dot"></span><b>${esc(c.state.attributes.friendly_name || c.entity)}</b><span class="ch">kanaal ${esc(c.ch)}</span></div>
+        <div class="cap"><span class="dot"></span><b>${esc(this._camName(c.entity))}</b><span class="ch">kanaal ${esc(c.ch)}</span></div>
       </div>`).join("")}</div>
       <div class="hint">Beelden vernieuwen om de 3 seconden. Klik op een camera voor live beeld.</div>
       <div class="modal" id="modal" hidden><div class="mbox"><div class="mhead"><b id="mtitle"></b><button id="mclose" title="Sluiten">✕</button></div><div id="mlive"></div></div></div>`;
@@ -142,7 +150,7 @@ class BtechnicsVigiCard extends HTMLElement {
   _openLive(entity) {
     this._liveEntity = entity;
     const m = this.shadowRoot.getElementById("modal");
-    this.shadowRoot.getElementById("mtitle").textContent = (this._hass.states[entity].attributes.friendly_name || entity) + " live";
+    this.shadowRoot.getElementById("mtitle").textContent = this._camName(entity) + " live";
     const host = this.shadowRoot.getElementById("mlive");
     host.innerHTML = "";
     const cs = document.createElement("ha-camera-stream");
@@ -307,7 +315,8 @@ class BtechnicsVigiCard extends HTMLElement {
     if (req !== this._req) return;
     const p = document.createElement("ha-hls-player");
     p.hass = this._hass;
-    p.url = url;
+    // ha-hls-player bouwt adressen met new URL(..., this.url): een relatief adres geeft "Invalid base URL" (vastgesteld 30/10/2026)
+    p.url = this._hass.hassUrl ? this._hass.hassUrl(url) : new URL(url, location.origin).href;
     p.controls = true;
     p.muted = true;
     p.autoPlay = true;
@@ -391,7 +400,17 @@ ha-card { padding: 12px 16px 16px; }
 }
 `;
 
-if (!customElements.get("btechnics-vigi-card")) customElements.define("btechnics-vigi-card", BtechnicsVigiCard);
+// Registreren. Bij het laden van de pagina bleef de kaart soms onbekend terwijl het script wel liep
+// ("Configuratiefout", vastgesteld 30/10/2026; zelfde gedrag als in Btechnics VTO door de scoped registry van HA).
+// Daarom later opnieuw proberen tot de naam bekend is.
+const vigiDefine = () => {
+  if (customElements.get("btechnics-vigi-card")) return true;
+  try { customElements.define("btechnics-vigi-card", class extends BtechnicsVigiCard {}); } catch (e) { /* later opnieuw */ }
+  return !!customElements.get("btechnics-vigi-card");
+};
+vigiDefine();
+[0, 250, 1000, 3000, 8000].forEach((ms) => setTimeout(vigiDefine, ms));
+window.addEventListener("load", vigiDefine);
 window.customCards = window.customCards || [];
 if (!window.customCards.find((c) => c.type === "btechnics-vigi-card"))
   window.customCards.push({ type: "btechnics-vigi-card", name: "Btechnics VIGI", description: "Live raster en opnames van de VIGI recorder" });
