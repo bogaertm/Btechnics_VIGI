@@ -44,7 +44,8 @@
         "title": "Btechnics VIGI",
         "description": "Camera-entiteiten maken de camera's ook beschikbaar in andere dashboards en automatiseringen. Opgelet: ook gewone gebruikers kunnen dan beelden opnemen via de diensten camera.record en camera.snapshot. Het dashboard Camera's heeft ze niet nodig.",
         "data": {
-          "camera_entities": "Camera-entiteiten aanmaken"
+          "camera_entities": "Camera-entiteiten aanmaken",
+          "events": "Receive recorder events (motion, person, vehicle)"
         }
       }
     }

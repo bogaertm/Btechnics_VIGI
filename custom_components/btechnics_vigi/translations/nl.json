@@ -42,9 +42,10 @@
     "step": {
       "init": {
         "title": "Btechnics VIGI",
-        "description": "Camera-entiteiten maken de camera's ook beschikbaar in andere dashboards en automatiseringen. Opgelet: ook gewone gebruikers kunnen dan beelden opnemen via de diensten camera.record en camera.snapshot. Het dashboard Camera's heeft ze niet nodig.",
+        "description": "Meldingen: de recorder stuurt bewegingen en andere meldingen naar Home Assistant (sensoren per camera, markeringen op de tijdlijn en het event btechnics_vigi_event voor automatisaties). Camera-entiteiten maken de camera's ook beschikbaar in andere dashboards en automatiseringen. Opgelet: ook gewone gebruikers kunnen dan beelden opnemen via de diensten camera.record en camera.snapshot. Het dashboard Camera's heeft ze niet nodig.",
         "data": {
-          "camera_entities": "Camera-entiteiten aanmaken"
+          "camera_entities": "Camera-entiteiten aanmaken",
+          "events": "Meldingen van de recorder ontvangen (beweging, persoon, voertuig)"
         }
       }
     }

@@ -9,6 +9,7 @@ De kaart gebruikt fetchWithAuth (beelden) of auth/sign_path (video en download).
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from http import HTTPStatus
 
@@ -100,6 +101,36 @@ class ClipView(HomeAssistantView):
         return web.FileResponse(clip.path, headers=headers)
 
 
+class EventPushView(HomeAssistantView):
+    """Meldingen van de recorder (geen HA-login mogelijk): geheime sleutel in het adres en enkel het IP van de
+    recorder. Bron: VIGI NVR OpenAPI v1.2 hoofdstuk 2.1.1 en 3."""
+    url = "/api/btechnics_vigi/event/{token}"
+    name = "api:btechnics_vigi:event"
+    requires_auth = False
+
+    async def post(self, request, token: str):
+        from .events import parse_payload  # noqa: PLC0415
+        hass = request.app["hass"]
+        hub = next((c.events for c in _coords(hass).values()
+                    if getattr(c, "events", None) and c.events.token and secrets.compare_digest(c.events.token, token)), None)
+        if hub is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        if not hub.allowed(request.remote):
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).warning("Btechnics VIGI: melding van onbekend adres %s geweigerd", request.remote)
+            return web.Response(status=HTTPStatus.FORBIDDEN)
+        body = await request.content.read(2_000_000)
+        data = parse_payload(body, request.headers.get("Content-Type", ""))
+        if data is None:
+            hub.debug = (hub.debug + [{"t": time.time(), "from": request.remote, "raw": body[:600].decode("utf-8", "replace")}])[-5:]
+            return web.Response(status=HTTPStatus.BAD_REQUEST)
+        hub.handle(data, request.remote)
+        return web.json_response({"error_code": 0})
+
+    async def get(self, request, token: str):
+        return web.Response(status=HTTPStatus.METHOD_NOT_ALLOWED)
+
+
 def _log_download(hass: HomeAssistant, user, clip, what: str = "gedownload") -> None:
     """Spoor van elke kopie van beelden (camerawet)."""
     tz = dt_util.get_default_time_zone()
@@ -123,3 +154,4 @@ def async_register_views(hass: HomeAssistant) -> None:
     hass.data[_KEY] = True
     hass.http.register_view(SnapshotView())
     hass.http.register_view(ClipView())
+    hass.http.register_view(EventPushView())

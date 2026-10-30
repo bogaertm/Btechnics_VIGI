@@ -17,7 +17,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import VigiAuthError, VigiClient, VigiError
 from .clips import ClipManager
-from .const import CONF_CAMERA_ENTITIES, DOMAIN, SCAN_INTERVAL_S
+from .const import CONF_CAMERA_ENTITIES, CONF_EVENTS, DOMAIN, SCAN_INTERVAL_S
+from .events import EventHub
 from .replay import LiveManager, ReplayManager
 from .views import SnapshotCache, async_register_views
 from .websocket import async_register_ws
@@ -80,6 +81,8 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
                                  streams=lambda: self.replay.count)
         self.snapshots = SnapshotCache(client)
         self.live = LiveManager(hass, client)
+        self.events = EventHub(hass, self)
+        self.events_enabled = entry.options.get(CONF_EVENTS, True)
 
     async def _async_update_data(self) -> list[dict]:
         try:
@@ -118,6 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coord = VigiCoordinator(hass, entry, client)
     await coord.async_config_entry_first_refresh()
     await hass.async_add_executor_job(_drop_old_clips, Path(hass.config.path("btechnics_vigi_clips")))
+    await coord.events.async_load()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coord
     async_register_ws(hass)
     async_register_views(hass)
@@ -131,6 +135,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coord.platforms = _platforms(entry)
     await hass.config_entries.async_forward_entry_setups(entry, coord.platforms)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
+    # meldingen: event server op de recorder instellen (of weghalen) zodra HA draait, het IP van HA is dan gekend
+    async def _sync(_hass=None):
+        await coord.events.async_sync(coord.events_enabled)
+    async_at_started(hass, _sync)
     return True
 
 
@@ -146,4 +154,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coord.replay.stop_all()
         await coord.live.stop_all()
         await coord.clips.stop_all()
+        await coord.events.async_save_now()
     return ok

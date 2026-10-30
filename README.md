@@ -8,5 +8,10 @@ Home Assistant-integratie voor een TP-Link VIGI NVR via de VIGI NVR OpenAPI (v1.
   download als mp4 (elke download in het logboek).
 - Afspelen: de recorder levert opnames op normale snelheid en kent max 4 afspeelsessies (gemeten). Daarom kijk je
   meteen via een stream terwijl HA het stuk in 3 delen tegelijk als mp4 binnenhaalt (zonder omzetten).
+- Meldingen (standaard aan): HA zet zichzelf als event server op de recorder (OpenAPI 4.8, een vrije plaats van de 3,
+  zonder foto). Per camera binary_sensors beweging, persoon en voertuig (30 s aan), het event `btechnics_vigi_event`
+  voor automatisaties en markeringen op de tijdlijn (14 dagen bewaard). Het adres heeft een geheime sleutel en enkel
+  het IP van de recorder wordt aanvaard.
+- Handleiding in de kaart (knop ? Handleiding).
 - Verbinding per kanaal als binary_sensor. Camera-entiteiten optioneel (standaard uit).
 - Tests: `../venv/bin/python -m pytest -q` en `node tests/js/card.test.mjs`.

@@ -8,3 +8,4 @@ REPLAY_STREAM = 1
 LIVE_STREAM = 2  # substream, H.264 sinds 30/10/2026
 MAX_REPLAY_S = 4 * 3600
 CONF_CAMERA_ENTITIES = "camera_entities"
+CONF_EVENTS = "events"

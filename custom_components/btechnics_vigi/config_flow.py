@@ -16,7 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import VigiAuthError, VigiClient, VigiError
-from .const import CONF_CAMERA_ENTITIES, DOMAIN
+from .const import CONF_CAMERA_ENTITIES, CONF_EVENTS, DOMAIN
 
 
 async def _test(hass, data: dict) -> tuple[dict[str, str], int]:
@@ -93,6 +93,7 @@ class VigiOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         return self.async_show_form(step_id="init", data_schema=vol.Schema({
+            vol.Required(CONF_EVENTS, default=self.config_entry.options.get(CONF_EVENTS, True)): bool,
             vol.Required(CONF_CAMERA_ENTITIES,
                          default=self.config_entry.options.get(CONF_CAMERA_ENTITIES, False)): bool,
         }))

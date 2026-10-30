@@ -1,6 +1,6 @@
 """Nagebootste VIGI NVR volgens OpenAPI v1.4: Digest SHA-256 op /openapi/token, Bearer, percent-encoded JSON."""
 import hashlib
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from aiohttp import web
 
@@ -20,6 +20,7 @@ class FakeNVR:
         self.expire_next = False
         self.procs = []
         self.busy_next = 0
+        self.servers = [{"id": 1, "ip_or_domain": "10.0.0.9", "port": 80, "url": quote("/ander", safe=""), "protocol": "HTTP", "picture_switch": "off"}]
 
     def app(self):
         a = web.Application()
@@ -27,6 +28,9 @@ class FakeNVR:
         for p in ("module_list", "added_devices", "snapshot", "record/days", "record/search/free_process",
                   "record/search/results"):
             a.router.add_get("/openapi/" + p, self.api)
+        a.router.add_get("/openapi/event_server", self.api)
+        a.router.add_post("/openapi/event_server/new_server", self.api)
+        a.router.add_post("/openapi/event_server/delete_server", self.api)
         return a
 
     async def token(self, req):
@@ -68,6 +72,19 @@ class FakeNVR:
                 {"id": 1, "name": quote("Opslag"), "alias": "IPC", "online": "1", "ip": "192.168.6.81", "mac": "x"},
                 {"id": 3, "name": quote("Cafe toog"), "alias": "Dahua", "online": "0", "ip": "192.168.6.90", "mac": "y"}],
                 "error_code": 0})
+        if p == "event_server":
+            return web.json_response({"event_server": self.servers, "error_code": 0})
+        if p == "event_server/new_server":
+            b = await req.json()
+            b = {k: unquote(v) if isinstance(v, str) else v for k, v in b.items()}
+            if any(x["id"] == b["id"] for x in self.servers):
+                return web.json_response({"error_code": -40210})
+            self.servers.append({**b, "url": quote(b["url"], safe="")})
+            return web.json_response({"error_code": 0})
+        if p == "event_server/delete_server":
+            b = await req.json()
+            self.servers = [x for x in self.servers if x["id"] != b["id"]]
+            return web.json_response({"error_code": 0})
         if p == "snapshot":
             return web.Response(body=b"\xff\xd8jpeg", content_type="image/jpeg")
         if p == "record/days":

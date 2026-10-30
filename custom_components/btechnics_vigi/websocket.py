@@ -33,7 +33,7 @@ def async_register_ws(hass: HomeAssistant) -> None:
         return
     hass.data[_REG] = True
     for f in (ws_channels, ws_days, ws_search, ws_replay, ws_replay_stop, ws_live, ws_webrtc, ws_ice, ws_clip_start, ws_clip_status,
-              ws_clip_cancel,
+              ws_clip_cancel, ws_events, ws_events_status,
               ws_probe, ws_replay_probe):
         websocket_api.async_register_command(hass, f)
 
@@ -295,3 +295,34 @@ async def ws_replay_probe(hass, connection, msg):
         elif t in heads:
             out[t] = await rtsp_rate(url, c.client.username, c.client.password_for_diagnose(), heads[t], sec)
     connection.send_result(msg["id"], out)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/events", vol.Optional("entry_id"): str,
+                                  vol.Required("channel"): int, vol.Required("day"): vol.Match(r"^\d{8}$")})
+@websocket_api.async_response
+async def ws_events(hass, connection, msg):
+    """Meldingen van een dag voor de markeringen op de tijdlijn: [[tijd, soort, tekst], ...]."""
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    from datetime import datetime, timedelta  # noqa: PLC0415
+    d = msg["day"]
+    tz = dt_util.get_default_time_zone()
+    a = datetime(int(d[:4]), int(d[4:6]), int(d[6:8]), tzinfo=tz)
+    b = datetime.combine(a.date() + timedelta(days=1), datetime.min.time(), tzinfo=tz)
+    connection.send_result(msg["id"], {"enabled": c.events_enabled, "events": c.events.day(msg["channel"], a.timestamp(), b.timestamp())})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/events/status", vol.Optional("entry_id"): str,
+                                  vol.Optional("sync", default=False): bool})
+@websocket_api.async_response
+async def ws_events_status(hass, connection, msg):
+    """Diagnose: staat de event server op de recorder en wat kwam er binnen."""
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    if msg["sync"]:
+        await c.events.async_sync(c.events_enabled)
+    connection.send_result(msg["id"], {"enabled": c.events_enabled, "status": c.events.status,
+                                       "received": c.events.received, "stored": len(c.events.events),
+                                       "debug": c.events.debug})

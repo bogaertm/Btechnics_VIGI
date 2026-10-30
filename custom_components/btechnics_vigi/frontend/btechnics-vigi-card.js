@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.11";
+const VIGI_VERSION = "0.4.0";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -114,18 +114,32 @@ class BtechnicsVigiCard extends HTMLElement {
   _startTimers() {
     this._stopTimers();
     this._snapT = setInterval(() => this._refreshSnaps(), 4000);
+    // vandaag: nieuwe meldingen elke 30 s bijwerken op de tijdlijn
+    this._evT = setInterval(async () => {
+      if (this._tab !== "rec" || !this._admin || this._sel.day !== todayStr(this._tz) || document.hidden) return;
+      await this._loadEvents();
+      this._drawDay();
+    }, 30000);
     this._tickT = setInterval(() => this._tick(), 500);
   }
-  _stopTimers() { clearInterval(this._snapT); clearInterval(this._tickT); this._snapT = this._tickT = null; }
+  _stopTimers() { clearInterval(this._snapT); clearInterval(this._tickT); clearInterval(this._evT); this._snapT = this._tickT = this._evT = null; }
 
   _shell() {
     const r = this.shadowRoot;
     const tabs = [["live", "Live"]].concat(this._admin ? [["rec", "Opnames"]] : []);
     r.innerHTML = `<style>${CSS}</style><ha-card>
       <div class="top"><div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${this._tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
-      <span class="ver">Btechnics VIGI ${VIGI_VERSION}</span></div>
+      <span class="topr"><button class="helpb ${this._help ? "on" : ""}" id="helpb" title="Handleiding">? Handleiding</button><span class="ver">Btechnics VIGI ${VIGI_VERSION}</span></span></div>
+      ${this._help ? `<div class="help">${HELP(this._admin)}</div>` : ""}
       ${this._err ? `<div class="err">${esc(this._err)}</div>` : ""}
       <div id="body">${this._ready ? "" : `<div class="empty">Laden…</div>`}</div></ha-card>`;
+    r.getElementById("helpb").addEventListener("click", () => {
+      this._help = !this._help;
+      const h = r.querySelector(".help");
+      if (h) { h.remove(); r.getElementById("helpb").classList.remove("on"); return; }
+      r.querySelector(".top").insertAdjacentHTML("afterend", `<div class="help">${HELP(this._admin)}</div>`);
+      r.getElementById("helpb").classList.add("on");
+    });
     r.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => {
       if (this._tab === b.dataset.tab) return;
       this._tab = b.dataset.tab;
@@ -297,8 +311,10 @@ class BtechnicsVigiCard extends HTMLElement {
           <div class="dayhead"><b id="dtitle"></b><span class="sub" id="dinfo"></span></div>
           <div class="hours" id="hours"></div>
           <div class="tlhead"><span id="tltitle" class="sub"></span><span class="tlnav" id="tlnav"></span></div>
-          <div class="tlwrap"><div class="tlbar" id="tlbar"><div class="tip" id="tip" hidden></div></div><div class="ticks" id="ticks"></div></div>
+          <div class="tlwrap"><div class="evbar" id="evbar"></div><div class="tlbar" id="tlbar"><div class="tip" id="tip" hidden></div></div><div class="ticks" id="ticks"></div></div>
+          <div class="legend" id="legend"><span><i class="lrec"></i> opname</span><span><i class="ev k-beweging"></i> beweging</span><span><i class="ev k-persoon"></i> persoon</span><span><i class="ev k-voertuig"></i> voertuig</span><span><i class="ev k-andere"></i> andere melding</span><span class="sub" id="evinfo"></span></div>
           <div class="pieces" id="pieces"></div>
+          <div class="evlist" id="evlist"></div>
           <div class="player" id="player" hidden>
             <div class="phead"><b id="pclock"></b><span class="sub" id="pname"></span></div>
             <div class="vbox" id="vbox"><div class="status" id="pstatus"></div><div class="prog" id="prog" hidden><i></i></div></div>
@@ -442,10 +458,23 @@ class BtechnicsVigiCard extends HTMLElement {
       const r = await this._hass.callWS({ type: "btechnics_vigi/record/search", channel: ch, day });
       if (req !== this._segReq) return;
       this._segs = r.segments || [];
+      await this._loadEvents();
+      if (req !== this._segReq) return;
       this._drawDay();
     } catch (e) {
       if (req === this._segReq) this._drawDay("Zoeken mislukt: " + (e.message || e.code));
     }
+  }
+
+  // meldingen van de recorder voor deze dag (markeringen op de tijdlijn); bestaan pas sinds de meldingen aanstaan
+  async _loadEvents() {
+    const ch = this._sel.channel, day = this._sel.day;
+    try {
+      const r = await this._hass.callWS({ type: "btechnics_vigi/events", channel: ch, day });
+      if (ch !== this._sel.channel || day !== this._sel.day) return;
+      this._evs = r.events || [];
+      this._evOn = r.enabled;
+    } catch (e) { this._evs = []; }
   }
 
   _range() {
@@ -478,7 +507,8 @@ class BtechnicsVigiCard extends HTMLElement {
       let rec = 0;
       for (const s of segs) rec += Math.max(0, Math.min(s.end, b) - Math.max(s.start, a));
       const f = Math.min(1, rec / 3600);
-      return `<button class="hr ${this._sel.hour === i ? "sel" : ""} ${rec ? "has" : ""}" data-i="${i}" title="${pad(hp(a))}u: ${rec ? dur(rec) + " opgenomen" : "geen opnames"}"><span style="--f:${rec ? Math.max(0.12, f) : 0}"></span><em>${pad(hp(a))}</em></button>`;
+      const ne = (this._evs || []).filter((e) => e[0] >= a && e[0] < b).length;
+      return `<button class="hr ${this._sel.hour === i ? "sel" : ""} ${rec ? "has" : ""}" data-i="${i}" title="${pad(hp(a))}u: ${rec ? dur(rec) + " opgenomen" : "geen opnames"}${ne ? `, ${ne} ${ne === 1 ? "melding" : "meldingen"}` : ""}"><span style="--f:${rec ? Math.max(0.12, f) : 0}"></span><em>${pad(hp(a))}</em>${ne ? "<b></b>" : ""}</button>`;
     }).join("");
     this.shadowRoot.querySelectorAll(".hr").forEach((b) => b.addEventListener("click", () => {
       const i = +b.dataset.i; this._sel.hour = this._sel.hour === i ? null : i; this._drawDay();
@@ -513,6 +543,25 @@ class BtechnicsVigiCard extends HTMLElement {
     if (zoom) { for (let mi = 0; mi <= 60; mi += 10) ticks.push([a + mi * 60, mi === 60 ? hm(b, this._tz) : hm(a + mi * 60, this._tz)]); }
     else { const offs = this._hourOffsets(); offs.forEach((o, i) => { if (i % 3 === 0) ticks.push([a + o, `${pad(tzParts((a + o) * 1000, this._tz).h)}u`]); }); ticks.push([b, "24u"]); }
     $("ticks").innerHTML = ticks.map(([t, l]) => `<span style="left:${((t - a) / L) * 100}%">${l}</span>`).join("");
+    // meldingen als markeringen boven de balk; per pixelbreedte samengenomen (een drukke dag blijft leesbaar)
+    const evs = (this._evs || []).filter((e) => e[0] >= a && e[0] < b);
+    const rank = { persoon: 3, voertuig: 2, beweging: 1 };
+    const buckets = new Map();
+    for (const e of evs) {
+      const k = Math.floor(((e[0] - a) / L) * (zoom ? 400 : 300));
+      const old = buckets.get(k);
+      if (!old || (rank[e[1]] || 0) > (rank[old[1]] || 0)) buckets.set(k, e);
+    }
+    const cls = (k) => (rank[k] ? k : "andere");
+    $("evbar").innerHTML = [...buckets.values()].map((e) => `<i class="ev k-${cls(e[1])}" style="left:${((e[0] - a) / L) * 100}%"></i>`).join("");
+    $("evinfo").textContent = this._evOn === false ? "Meldingen staan uit (instellingen van de koppeling)."
+      : `${evs.length} ${evs.length === 1 ? "melding" : "meldingen"}${zoom ? " in dit uur" : " op deze dag"}`;
+    // in een uur: de meldingen als lijst, klik = afspelen vanaf 5 s ervoor
+    const el = $("evlist");
+    el.innerHTML = zoom && evs.length ? `<div class="sub">Meldingen</div>` + evs.slice(0, 120).map((e) =>
+      `<button class="evb" data-t="${Math.floor(e[0]) - 5}"><i class="ev k-${cls(e[1])}"></i>${hms(Math.floor(e[0]), this._tz)} <span class="sub">${esc(e[2])}</span></button>`).join("")
+      + (evs.length > 120 ? `<span class="sub">en nog ${evs.length - 120}</span>` : "") : "";
+    el.querySelectorAll(".evb").forEach((p) => p.addEventListener("click", () => this._play(+p.dataset.t)));
     // in een uur: de stukken als lijst (overzichtelijk, enkel dat uur)
     const list = $("pieces");
     list.innerHTML = zoom
@@ -532,7 +581,9 @@ class BtechnicsVigiCard extends HTMLElement {
     const tip = this.shadowRoot.getElementById("tip"), bar = this.shadowRoot.getElementById("tlbar");
     const t = this._timeAt(ev);
     const seg = (this._segs || []).find((s) => t >= s.start && t < s.end);
-    tip.textContent = hms(t, this._tz) + (seg ? "" : " (geen opname)");
+    const [ra, rb] = this._range(), near = (rb - ra) / 150;
+    const hit = (this._evs || []).find((e) => Math.abs(e[0] - t) <= near);
+    tip.textContent = hms(t, this._tz) + (seg ? "" : " (geen opname)") + (hit ? ` · ${hit[2]} om ${hms(Math.floor(hit[0]), this._tz)}` : "");
     tip.style.left = `${Math.min(bar.clientWidth - 90, Math.max(0, ev.clientX - bar.getBoundingClientRect().left - 45))}px`;
     tip.hidden = false;
   }
@@ -859,6 +910,7 @@ class BtechnicsVigiCard extends HTMLElement {
       const r = await this._hass.callWS({ type: "btechnics_vigi/record/search", channel: ch, day });
       if (ch !== this._sel.channel || day !== this._sel.day) return;
       this._segs = r.segments || [];
+      await this._loadEvents();
       this._drawDay();
     } catch (e) { /* oude lijst blijft */ }
   }
@@ -920,6 +972,28 @@ class BtechnicsVigiCard extends HTMLElement {
   }
 }
 
+// handleiding in de kaart (Nederlands, kort)
+const HELP = (admin) => `
+<h4>Live</h4>
+<ul><li>De beelden vernieuwen om de 4 seconden. Klik op een camera voor live video (meestal binnen 2 tot 4 seconden).</li>
+<li>Live gebruikt de lage kwaliteit van de camera (substream), zonder geluid.</li></ul>
+${admin ? `<h4>Opnames terugkijken</h4>
+<ul><li>Kies een camera bovenaan en een dag in de kalender. Een oranje puntje betekent dat er opnames zijn.</li>
+<li>De 24 vakjes tonen per uur hoeveel er opgenomen is. Klik op een uur om in te zoomen; het puntje rechtsboven betekent meldingen in dat uur.</li>
+<li>Klik op de tijdlijn om af te spelen vanaf dat tijdstip. Je ziet meteen beeld; na ongeveer een minuut is het stuk binnen en kan je spoelen, versnellen en downloaden.</li>
+<li>Automatisch verder speelt vanzelf het volgende stuk, ook na middernacht met de volgende dag.</li></ul>
+<h4>Bediening</h4>
+<ul><li>Snelheid 0.5x tot 16x. Van buitenaf (via internet) kan 16x even haperen; 8x of lager loopt vlot.</li>
+<li><kbd>spatie</kbd> pauze, <kbd>←</kbd> <kbd>→</kbd> 10 s terug of verder, beeld per beeld met de knoppen bij pauze.</li>
+<li>Download geeft het stuk als mp4-bestand (H.265). Elke download en elke keer bekijken komt in het logboek van Home Assistant.</li></ul>
+<h4>Meldingen</h4>
+<ul><li>De recorder stuurt beweging, persoon en voertuig door. Ze staan als bolletjes boven de tijdlijn: <i class="ev k-beweging"></i> beweging, <i class="ev k-persoon"></i> persoon, <i class="ev k-voertuig"></i> voertuig, <i class="ev k-andere"></i> andere.</li>
+<li>In een uur staan de meldingen ook als lijst: klik erop om af te spelen vanaf 5 s ervoor.</li>
+<li>Per camera zijn er sensoren (beweging, persoon, voertuig) voor automatisaties, en het event <code>btechnics_vigi_event</code>.</li>
+<li>Markeringen bestaan pas vanaf het moment dat de meldingen aanstaan en blijven 14 dagen bewaard.</li></ul>
+<h4>Privacy</h4>
+<ul><li>Opnames zijn enkel zichtbaar voor beheerders. Beelden zijn persoonsgegevens: bekijk en deel ze enkel met een geldige reden (camerawet).</li></ul>` : `<p>Opnames terugkijken kan enkel voor beheerders.</p>`}`;
+
 const CSS = `
 :host { display:block; outline:none; }
 ha-card { padding: 12px 16px 16px; }
@@ -928,6 +1002,21 @@ button { font:inherit; color:var(--primary-text-color); }
 .tabs { display:flex; gap:6px; }
 .tab { border:1px solid var(--divider-color); background:none; padding:8px 16px; border-radius:18px; cursor:pointer; }
 .tab.on { background:var(--primary-color); border-color:var(--primary-color); color:var(--text-primary-color, #fff); }
+.topr { display:flex; align-items:center; gap:10px; }
+.helpb { border:1px solid var(--divider-color); background:none; border-radius:16px; min-height:32px; padding:0 12px; cursor:pointer; color:var(--primary-text-color); }
+.helpb.on { background:var(--primary-text-color); color:var(--card-background-color, #fff); }
+.help { margin:0 0 12px; padding:12px 14px; border:1px solid var(--divider-color); border-radius:10px; background:var(--secondary-background-color); font-size:.9rem; line-height:1.45; }
+.help h4 { margin:10px 0 4px; font-size:.95rem; } .help h4:first-child { margin-top:0; }
+.help ul { margin:0; padding-left:18px; } .help kbd { border:1px solid var(--divider-color); border-radius:4px; padding:0 4px; font-size:.8rem; }
+.evbar { position:relative; height:12px; margin-bottom:2px; }
+.ev { position:absolute; top:2px; width:8px; height:8px; margin-left:-4px; border-radius:50%; display:inline-block; }
+.legend .ev, .evb .ev { position:static; margin:0 4px 0 0; vertical-align:middle; }
+.k-beweging { background:#F59E32; } .k-persoon { background:#ED6928; } .k-voertuig { background:#3b82f6; } .k-andere { background:#9e9e9e; }
+.legend { display:flex; flex-wrap:wrap; gap:4px 14px; align-items:center; font-size:.8rem; color:var(--secondary-text-color); margin:2px 0 8px; }
+.legend .lrec { display:inline-block; width:14px; height:8px; background:var(--primary-color); opacity:.8; border-radius:2px; vertical-align:middle; margin-right:4px; }
+.evlist { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; } .evlist > .sub { width:100%; }
+.evb { border:1px solid var(--divider-color); background:none; border-radius:8px; min-height:32px; padding:0 8px; cursor:pointer; color:var(--primary-text-color); }
+.hr b { position:absolute; top:3px; right:3px; width:6px; height:6px; border-radius:50%; background:#ED6928; }
 .ver, .sub, .hint { color:var(--secondary-text-color); font-size:.85rem; }
 .err { color:var(--error-color); margin:8px 0; }
 .empty { padding:24px; color:var(--secondary-text-color); }

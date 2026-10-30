@@ -39,7 +39,7 @@ async def test_entiteiten_zonder_camera_entiteiten(hass, via_fake):
     """Standaard geen camera-entiteiten (audit: camera.record ook voor gewone gebruikers)."""
     await _setup(hass)
     assert hass.states.async_all("camera") == []
-    off = [s for s in hass.states.async_all("binary_sensor") if s.state == "off"]
+    off = [s for s in hass.states.async_all("binary_sensor") if s.state == "off" and "verbinding" in s.entity_id]
     assert len(off) == 1 and "toog" in off[0].entity_id
 
 
@@ -121,3 +121,43 @@ async def test_optie_aan_en_uit_zonder_vastlopen(hass, via_fake):
     hass.config_entries.async_update_entry(e, options={"camera_entities": False})
     await hass.async_block_till_done()
     assert e.state is ConfigEntryState.LOADED
+
+
+async def test_meldingen_van_de_recorder(hass, via_fake, hass_client_no_auth, hass_ws_client):
+    """Event server wordt ingesteld (andere server blijft), push van de recorder zet de sensor aan en komt op de tijdlijn."""
+    import time
+    from unittest.mock import patch
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+    await __import__("homeassistant.setup", fromlist=["x"]).async_setup_component(hass, "http", {})
+    with patch("homeassistant.components.network.async_get_source_ip", return_value="192.168.6.138"):
+        e = await _setup(hass)
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+        await hass.async_block_till_done()
+    coord = hass.data[DOMAIN][e.entry_id]
+    ours = [s for s in via_fake.servers if s["id"] != 1]
+    assert len(via_fake.servers) == 2 and ours[0]["ip_or_domain"] == "192.168.6.138", via_fake.servers
+    assert "actief" in coord.events.status
+    got = []
+    hass.bus.async_listen("btechnics_vigi_event", lambda ev: got.append(ev.data))
+    client = await hass_client_no_auth()
+    body = (b'----VIGI-OPENAPI-MSG-PUSH\r\nContent-Disposition: form-data;name="event"\r\n'
+            b'Content-Type: application/json; charset=UTF-8\r\n\r\n'
+            b'{"device_id":"x","device_name":"NVR","messages":[{"type":1,"sub_type":[2,101],'
+            b'"localtime":"2026-10-30 22:31:05","channel":"1"}]}\r\n----VIGI-OPENAPI-MSG-PUSH--\r\n')
+    url = "/api/btechnics_vigi/event/" + coord.events.token
+    hdr = {"Content-Type": "multipart/form-data;boundary=--VIGI-OPENAPI-MSG-PUSH"}
+    r = await client.post(url, data=body, headers=hdr)
+    assert r.status == 403                                   # testclient is niet het IP van de recorder
+    r = await client.post("/api/btechnics_vigi/event/fout", data=body, headers=hdr)
+    assert r.status == 404
+    with patch.object(type(coord.events), "allowed", lambda self, remote: True):
+        r = await client.post(url, data=body, headers=hdr)
+    assert r.status == 200
+    await hass.async_block_till_done()
+    assert got and got[0]["kind"] == "persoon" and got[0]["channel_name"] == "Opslag"
+    assert hass.states.get("binary_sensor.vigi_recorder_opslag_persoon").state == "on"
+    assert hass.states.get("binary_sensor.vigi_recorder_opslag_beweging").state == "on"
+    ws = await hass_ws_client(hass)
+    await ws.send_json({"id": 1, "type": f"{DOMAIN}/events", "channel": 1, "day": "20261030"})
+    r = await ws.receive_json()
+    assert r["success"] and r["result"]["events"][0][1] == "persoon"
