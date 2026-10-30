@@ -1,8 +1,51 @@
 {
   "config": {
-    "step": {"user": {"title": "VIGI recorder", "description": "IP van de recorder en een aparte gebruiker voor Home Assistant. De OpenAPI moet aan staan (Settings > Network > OpenAPI, poort 20443).",
-      "data": {"host": "IP-adres", "username": "Gebruiker", "password": "Wachtwoord"}}},
-    "error": {"invalid_auth": "Gebruiker of wachtwoord geweigerd door de recorder.", "cannot_connect": "Recorder niet bereikbaar op poort 20443 (staat de OpenAPI aan?)."},
-    "abort": {"already_configured": "Deze recorder is al toegevoegd."}
+    "step": {
+      "user": {
+        "title": "VIGI recorder",
+        "description": "IP van de recorder en een aparte gebruiker voor Home Assistant. De OpenAPI moet aan staan (Settings > Network > OpenAPI, poort 20443).",
+        "data": {
+          "host": "IP-adres",
+          "username": "Gebruiker",
+          "password": "Wachtwoord"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw aanmelden",
+        "description": "De recorder weigert het wachtwoord van {user}. Geef het nieuwe wachtwoord.",
+        "data": {
+          "password": "Wachtwoord"
+        }
+      },
+      "reconfigure": {
+        "title": "Recorder aanpassen",
+        "description": "Ander IP, andere gebruiker of nieuw wachtwoord.",
+        "data": {
+          "host": "IP-adres",
+          "username": "Gebruiker",
+          "password": "Wachtwoord"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Gebruiker of wachtwoord geweigerd door de recorder.",
+      "cannot_connect": "Recorder niet bereikbaar op poort 20443 (staat de OpenAPI aan?)."
+    },
+    "abort": {
+      "already_configured": "Deze recorder is al toegevoegd.",
+      "reauth_successful": "Opnieuw aangemeld.",
+      "reconfigure_successful": "Recorder aangepast."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Btechnics VIGI",
+        "description": "Camera-entiteiten maken de camera's ook beschikbaar in andere dashboards en automatiseringen. Opgelet: ook gewone gebruikers kunnen dan beelden opnemen via de diensten camera.record en camera.snapshot. Het dashboard Camera's heeft ze niet nodig.",
+        "data": {
+          "camera_entities": "Camera-entiteiten aanmaken"
+        }
+      }
+    }
   }
 }

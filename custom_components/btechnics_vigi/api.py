@@ -91,58 +91,82 @@ class VigiClient:
         self._lock = asyncio.Lock()
         self._search_lock = asyncio.Lock()
         self._proc: int | None = None
+        self._gen = 0
 
     @property
     def base(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}"
 
     # ---------- aanmelden ----------
+    # Audit 30/10/2026: netwerkfouten werden geen VigiError (ClientConnectorError ontsnapte), een mislukte refresh
+    # viel niet terug op Digest, aanmelden had geen eigen timeout en gelijktijdige 401's gaven elk een nieuwe login.
+    _TOKEN_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
     async def _token_digest(self) -> None:
         uri = "/openapi/token"
-        async with self._s.get(self.base + uri, ssl=False) as r:
+        async with self._s.get(self.base + uri, ssl=False, timeout=self._TOKEN_TIMEOUT) as r:
             if r.status != 401:
                 raise VigiError(f"onverwacht antwoord bij aanmelden: HTTP {r.status}")
             ch = parse_challenge(r.headers.get("WWW-Authenticate", ""))
         auth = digest_header(ch, self.username, self._password, "GET", uri)
-        async with self._s.get(self.base + uri, headers={"Authorization": auth}, ssl=False) as r:
+        async with self._s.get(self.base + uri, headers={"Authorization": auth}, ssl=False,
+                               timeout=self._TOKEN_TIMEOUT) as r:
             if r.status == 401:
                 raise VigiAuthError("gebruiker of wachtwoord geweigerd")
             if r.status != 200:
                 raise VigiError(f"aanmelden mislukt: HTTP {r.status}")
-            self._store(await r.json(content_type=None))
+            data = await r.json(content_type=None)
+        if not data.get("access_token"):
+            code = data.get("error_code")
+            if code in (-40401, -70302, -70312, -70301):
+                raise VigiAuthError(f"aanmelden geweigerd: foutcode {code}")
+            raise VigiError(f"geen token ontvangen: foutcode {code}", code)
+        self._store(data)
 
     async def _token_refresh(self) -> bool:
         if not self._refresh:
             return False
         try:
-            async with self._s.get(self.base + "/openapi/token", ssl=False,
+            async with self._s.get(self.base + "/openapi/token", ssl=False, timeout=self._TOKEN_TIMEOUT,
                                    params={"grant_type": "refresh_token", "refresh_token": self._refresh}) as r:
                 if r.status != 200:
-                    return False
-                self._store(await r.json(content_type=None))
-                return True
-        except aiohttp.ClientError:
+                    raise ValueError(r.status)
+                data = await r.json(content_type=None)
+            if not data.get("access_token"):
+                raise ValueError(data.get("error_code"))
+            self._store(data)
+            return True
+        except Exception:  # noqa: BLE001  elke mislukte refresh: refresh token weg, terug naar Digest
+            self._refresh = None
             return False
 
     def _store(self, data: dict) -> None:
-        if not data.get("access_token"):
-            raise VigiError(f"geen token ontvangen: {data.get('error_code')}")
         self._access = unquote(data["access_token"])
         self._refresh = unquote(data.get("refresh_token") or "") or None
         self._expires = time.monotonic() + int(data.get("expires_in") or 1800) - 60
+        self._gen += 1
 
-    async def _ensure_token(self, force: bool = False) -> None:
+    async def _ensure_token(self, force_gen: int | None = None) -> None:
+        """force_gen: het token van die generatie werd geweigerd; enkel vernieuwen als niemand dat al deed."""
         async with self._lock:
-            if not force and self._access and time.monotonic() < self._expires:
+            if force_gen is None and self._access and time.monotonic() < self._expires:
                 return
-            if not await self._token_refresh():
-                await self._token_digest()
+            if force_gen is not None and self._gen != force_gen and self._access:
+                return
+            try:
+                if not await self._token_refresh():
+                    await self._token_digest()
+            except VigiError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+                raise VigiError(f"aanmelden: {e.__class__.__name__} {e}") from e
 
     # ---------- aanvragen ----------
     async def request(self, method: str, path: str, params: dict | None = None,
                       json_body: dict | None = None, raw: bool = False) -> Any:
         await self._ensure_token()
         for poging in (1, 2):
+            gen = self._gen
             headers = {"Authorization": f"Bearer {self._access}"}
             body = None
             if json_body is not None:
@@ -152,15 +176,19 @@ class VigiClient:
                                            headers=headers, ssl=False,
                                            timeout=aiohttp.ClientTimeout(total=20)) as r:
                     if r.status == 401 and poging == 1:
-                        await self._ensure_token(force=True)
-                        continue
-                    if r.status != 200:
-                        raise VigiError(f"{path}: HTTP {r.status}")
-                    if raw:
-                        return await r.read()
-                    data = _decode(await r.json(content_type=None))
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                        retry = True
+                    else:
+                        retry = False
+                        if r.status != 200:
+                            raise VigiError(f"{path}: HTTP {r.status}")
+                        if raw:
+                            return await r.read()
+                        data = _decode(await r.json(content_type=None))
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
                 raise VigiError(f"{path}: {e.__class__.__name__} {e}") from e
+            if retry:
+                await self._ensure_token(force_gen=gen)
+                continue
             if isinstance(data, dict) and data.get("error_code", 0) != 0:
                 raise VigiError(f"{path}: foutcode {data.get('error_code')}", data.get("error_code"))
             return data
@@ -240,17 +268,19 @@ class VigiClient:
                 d = await self._results({"channel": channel, "process": proc, "day": day,
                                          "start_index": start, "end_index": start + page - 1})
             except VigiError as e:
-                if start == 0:
-                    if e.code in (-71104, -40205):  # geen opnames die dag
-                        return []
-                    raise
-                break  # start_index voorbij het einde
+                # Audit 30/10/2026: andere fouten na pagina 1 gaven stil een half resultaat
+                if e.code in (-71104, -40205):  # geen (verdere) resultaten
+                    return res
+                raise
             batch = d.get("results") or []
             res += [{"start": int(x["start_time"]), "end": int(x["end_time"])} for x in batch]
             if len(batch) < page:
                 break
             start += page
         return res
+
+    def password_for_diagnose(self) -> str:
+        return self._password
 
     def rtsp_url(self, path: str) -> str:
         cred = f"{quote(self.username, safe='')}:{quote(self._password, safe='')}@"
@@ -264,11 +294,17 @@ class VigiClient:
 
 
 def merge_segments(segs: list[dict], gap: int = 20) -> list[dict]:
-    """Stukken met tot 20 s ertussen samenvoegen; HA verdraagt een tijdsprong tot 30 s in een stream (MAX_TIMESTAMP_GAP)."""
+    """Stukken met tot 20 s ertussen samenvoegen; HA verdraagt een tijdsprong tot 30 s in een stream (MAX_TIMESTAMP_GAP).
+    Elk samengevoegd stuk houdt zijn doorlopende deelstukken bij in "parts" (nodig om exact binnen te halen)."""
     out: list[dict] = []
     for s in sorted(segs, key=lambda x: x["start"]):
         if out and s["start"] - out[-1]["end"] <= gap:
-            out[-1]["end"] = max(out[-1]["end"], s["end"])
+            last = out[-1]
+            if s["start"] <= last["parts"][-1][1]:
+                last["parts"][-1][1] = max(last["parts"][-1][1], s["end"])
+            else:
+                last["parts"].append([s["start"], s["end"]])
+            last["end"] = max(last["end"], s["end"])
         else:
-            out.append(dict(s))
+            out.append({"start": s["start"], "end": s["end"], "parts": [[s["start"], s["end"]]]})
     return out

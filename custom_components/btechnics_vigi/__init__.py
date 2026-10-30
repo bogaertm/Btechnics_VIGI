@@ -11,11 +11,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.start import async_at_started
 from homeassistant.loader import async_get_integration
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import VigiClient, VigiError
-from .const import DOMAIN, SCAN_INTERVAL_S
-from .replay import ReplayManager
+from .api import VigiAuthError, VigiClient, VigiError
+from .clips import ClipManager
+from .const import CONF_CAMERA_ENTITIES, DOMAIN, SCAN_INTERVAL_S
+from .replay import LiveManager, ReplayManager
+from .views import SnapshotCache, async_register_views
 from .websocket import async_register_ws
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,15 +76,27 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
         self.client = client
         self.entry = entry
         self.replay = ReplayManager(hass, client)
+        self.clips = ClipManager(hass, client, Path(hass.config.path("btechnics_vigi_clips")))
+        self.snapshots = SnapshotCache(client)
+        self.live = LiveManager(hass, client)
 
     async def _async_update_data(self) -> list[dict]:
         try:
             return await self.client.devices()
+        except VigiAuthError as e:
+            # Audit 30/10/2026: na een wachtwoordwijziging bleef HA elke minuut aanmelden (risico: account geblokkeerd)
+            raise ConfigEntryAuthFailed(str(e)) from e
         except VigiError as e:
             raise UpdateFailed(str(e)) from e
 
     def channel(self, ch: int) -> dict | None:
         return next((d for d in self.data or [] if d["channel"] == ch), None)
+
+
+def _platforms(entry: ConfigEntry) -> list[Platform]:
+    # Camera-entiteiten enkel als gekozen (Audit 30/10/2026: camera.record en camera.snapshot zijn ook voor
+    # gewone gebruikers bruikbaar en kunnen beelden naar /config/www schrijven, publiek via /local).
+    return PLATFORMS if entry.options.get(CONF_CAMERA_ENTITIES, False) else [Platform.BINARY_SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -90,14 +106,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coord.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coord
     async_register_ws(hass)
+    async_register_views(hass)
     await _async_register_cards(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    if not entry.options.get(CONF_CAMERA_ENTITIES, False):
+        reg = er.async_get(hass)
+        for ent in er.async_entries_for_config_entry(reg, entry.entry_id):
+            if ent.domain == "camera":
+                reg.async_remove(ent.entity_id)
+    await hass.config_entries.async_forward_entry_setups(entry, _platforms(entry))
+    entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 
 
+async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    ok = await hass.config_entries.async_unload_platforms(entry, _platforms(entry))
     if ok:
         coord: VigiCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coord.replay.stop_all()
+        await coord.live.stop_all()
+        await coord.clips.stop_all()
     return ok

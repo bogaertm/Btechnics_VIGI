@@ -35,7 +35,8 @@ async def test_token_verlopen_wordt_vernieuwd(nvr):
 async def test_zoeken_pagineert_en_voegt_samen(nvr):
     async with aiohttp.ClientSession() as s:
         segs = await client(s, nvr).record_search(1, "20261030")
-    assert segs == [{"start": 1793350000, "end": 1793354500}, {"start": 1793360000, "end": 1793360100}]
+    assert [(x["start"], x["end"]) for x in segs] == [(1793350000, 1793354500), (1793360000, 1793360100)]
+    assert segs[0]["parts"] == [[1793350000, 1793354500]]   # aansluitend = een deel
     assert nvr.calls.count("record/search/results") == 2
 
 
@@ -67,9 +68,10 @@ def test_digest_zoals_document():
 
 def test_merge_gap():
     # tot 20 s ertussen = een stuk (HA verdraagt 30 s tijdsprong), meer = apart
-    assert merge_segments([{"start": 0, "end": 10}, {"start": 30, "end": 40}]) == [{"start": 0, "end": 40}]
-    assert merge_segments([{"start": 0, "end": 10}, {"start": 31, "end": 40}]) == [
-        {"start": 0, "end": 10}, {"start": 31, "end": 40}]
+    assert merge_segments([{"start": 0, "end": 10}, {"start": 30, "end": 40}]) == [
+        {"start": 0, "end": 40, "parts": [[0, 10], [30, 40]]}]
+    assert [(x["start"], x["end"]) for x in merge_segments([{"start": 0, "end": 10}, {"start": 31, "end": 40}])] == [
+        (0, 10), (31, 40)]
 
 
 async def test_zoekproces_wordt_hergebruikt(nvr):

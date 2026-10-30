@@ -35,14 +35,41 @@ async def _setup(hass):
     return e
 
 
-async def test_entiteiten(hass, via_fake):
+async def test_entiteiten_zonder_camera_entiteiten(hass, via_fake):
+    """Standaard geen camera-entiteiten (audit: camera.record ook voor gewone gebruikers)."""
     await _setup(hass)
-    cams = sorted(s.entity_id for s in hass.states.async_all("camera"))
-    assert len(cams) == 2
+    assert hass.states.async_all("camera") == []
     off = [s for s in hass.states.async_all("binary_sensor") if s.state == "off"]
     assert len(off) == 1 and "toog" in off[0].entity_id
-    cafe = hass.states.get([c for c in cams if "toog" in c][0])
-    assert cafe.state == "unavailable"
+
+
+async def test_camera_entiteiten_als_optie(hass, via_fake):
+    e = MockConfigEntry(domain=DOMAIN, data={CONF_HOST: "192.168.6.80", CONF_USERNAME: USER, CONF_PASSWORD: PASS},
+                        options={"camera_entities": True})
+    await __import__("homeassistant.setup", fromlist=["x"]).async_setup_component(hass, "stream", {})
+    e.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done()
+    cams = hass.states.async_all("camera")
+    assert len(cams) == 2
+    assert [c for c in cams if "toog" in c.entity_id][0].state == "unavailable"
+
+
+async def test_wachtwoord_gewijzigd_vraagt_opnieuw_aanmelden(hass, via_fake, monkeypatch):
+    e = await _setup(hass)
+    monkeypatch.setattr("tests.fake_nvr.PASS", "nieuw")   # recorder aanvaardt het oude wachtwoord niet meer
+    import tests.fake_nvr as f
+    via_fake.tokens.clear()
+    coord = hass.data[DOMAIN][e.entry_id]
+    coord.client._access = None
+    coord.client._refresh = None
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    flows = [x for x in hass.config_entries.flow.async_progress() if x["context"]["source"] == "reauth"]
+    assert flows, "geen reauth gestart"
+    r = await hass.config_entries.flow.async_configure(flows[0]["flow_id"], {CONF_PASSWORD: "nieuw"})
+    assert r["reason"] == "reauth_successful"
+    assert e.data[CONF_PASSWORD] == "nieuw"
 
 
 async def test_ws_rechten(hass, via_fake, hass_ws_client, hass_admin_user):
@@ -64,3 +91,17 @@ async def test_ws_rechten(hass, via_fake, hass_ws_client, hass_admin_user):
     await ws.send_json({"id": 5, "type": f"{DOMAIN}/channels"})
     r = await ws.receive_json()
     assert r["success"] and len(r["result"]["channels"]) == 2 and r["result"]["admin"] is False
+    assert "ip" not in r["result"]["channels"][0] and r["result"]["host"] is None
+    n = 10
+    for cmd in ({"type": f"{DOMAIN}/record/search", "channel": 1, "day": "20261030"},
+                {"type": f"{DOMAIN}/replay", "channel": 1, "start": 1793350000},
+                {"type": f"{DOMAIN}/replay/stop"},
+                {"type": f"{DOMAIN}/live", "channel": 1},
+                {"type": f"{DOMAIN}/clip/start", "channel": 1, "start": 1793350000, "end": 1793350060},
+                {"type": f"{DOMAIN}/clip/status", "clip_id": "x"},
+                {"type": f"{DOMAIN}/probe", "path": "/openapi/module_list"},
+                {"type": f"{DOMAIN}/replay_probe", "channel": 1, "start": 1, "end": 2}):
+        n += 1
+        await ws.send_json({"id": n, **cmd})
+        r = await ws.receive_json()
+        assert not r["success"] and r["error"]["code"] == "unauthorized", cmd
