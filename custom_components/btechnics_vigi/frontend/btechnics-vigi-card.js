@@ -806,6 +806,29 @@ class BtechnicsVigiCard extends HTMLElement {
     else this._setStatus(null, this._sel.day === todayStr(this._tz) ? "Einde van de opnames tot nu." : "Einde van de opnames op deze dag.");
   }
 
+  // laatste venster van de dag: de eerste 5 min van de volgende dag met opnames alvast zoeken en binnenhalen
+  async _prefetchNextDay() {
+    const ch = this._sel.channel, today = todayStr(this._tz), known = this._days[ch];
+    let day = this._sel.day;
+    for (let i = 0; i < 14; i++) {
+      day = addDays(day, 1);
+      if (day > today) return;
+      if (known && known.size && !known.has(day) && day !== today) continue;
+      try {
+        const r = await this._hass.callWS({ type: "btechnics_vigi/record/search", channel: ch, day });
+        const segs = r.segments || [];
+        if (!segs.length) continue;
+        this._nextDayCache = { ch, day, segs };
+        const f = segs[0], end = Math.min(f.end, f.start + 300);
+        if (end < Date.now() / 1000 - 5) {
+          const parts = (f.parts || [[f.start, f.end]]).filter((p) => p[1] > f.start && p[0] < end);
+          this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: ch, start: f.start, end, parts, prefetch: true }).catch(() => {});
+        }
+      } catch (e) { /* bij het einde gewoon zoeken */ }
+      return;
+    }
+  }
+
   async _nextDay() {
     const req = this._req, ch = this._sel.channel, today = todayStr(this._tz);
     const known = this._days[ch];
@@ -819,7 +842,9 @@ class BtechnicsVigiCard extends HTMLElement {
       const y = +day.slice(0, 4), m = +day.slice(4, 6);
       if (!this._cal || this._cal.y !== y || this._cal.m !== m) { this._cal = { y, m }; this._loadDays(); }
       this._drawCalendar();
-      await this._loadDay();
+      const cache = this._nextDayCache;
+      if (cache && cache.ch === ch && cache.day === day) { this._segReq = (this._segReq || 0) + 1; this._segs = cache.segs; this._drawDay(); }
+      else await this._loadDay();
       if (req !== this._req || ch !== this._sel.channel || day !== this._sel.day) return true;   // intussen iets anders gekozen
       const first = (this._segs || [])[0];
       if (first) { this._play(first.start, Math.min(first.end, first.start + 300), true); return true; }
@@ -850,6 +875,7 @@ class BtechnicsVigiCard extends HTMLElement {
     // het volgende venster alvast binnenhalen (zelfde grenzen als _play, dan hergebruikt de server het).
     // Vanaf 4x ook het venster daarna: de server haalt alles in volgorde binnen met max 3 replays (clips.py).
     let w = this._nextWindow();
+    if (!w && this._auto) { this._prefetchNextDay(); return; }
     for (let i = 0; w && i < (this._speed >= 4 ? 2 : 1); i++, w = this._nextWindow(w)) {
       if (w.end > Date.now() / 1000 - 5) break;   // nog niet opgenomen: niet vooraf ophalen (review)
       const parts = (w.seg.parts || [[w.seg.start, w.seg.end]]).filter((p) => p[1] > w.start && p[0] < w.end);
