@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.10";
+const VIGI_VERSION = "0.3.11";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -68,7 +68,7 @@ class BtechnicsVigiCard extends HTMLElement {
     else if (this._tab === "live") this._updateLive();
   }
 
-  connectedCallback() { if (this._hass && this._ready) this._startTimers(); }
+  connectedCallback() { if (this._hass && this._ready) this._startTimers(); else if (this._hass && this._initAborted) { this._initAborted = false; this._init(); } }
   disconnectedCallback() { this._stopTimers(); this._stopAll(); }
 
   get _tz() { return (this._hass && this._hass.config && this._hass.config.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone; }
@@ -85,14 +85,25 @@ class BtechnicsVigiCard extends HTMLElement {
     this._speed = this._speed || 1;
     this._auto = this._auto !== false;
     this._shell();
-    try {
-      const r = await this._hass.callWS({ type: "btechnics_vigi/channels" });
-      this._channels = r.channels || [];
-      this._entry = r.entry_id;
-      this._err = null;
-    } catch (e) {
-      this._err = "Recorder niet bereikbaar: " + (e.message || e.code || e);
-      this._channels = [];
+    // Na een herstart van HA bleef de kaart op "Laden…" staan: de aanvraag ging verloren tijdens het opnieuw verbinden
+    // of de koppeling was nog niet geladen (test 30/10/2026). Daarom met tijdslimiet en opnieuw proberen.
+    const run = (this._initRun = (this._initRun || 0) + 1);
+    for (let i = 0; ; i++) {
+      try {
+        const r = await Promise.race([this._hass.callWS({ type: "btechnics_vigi/channels" }),
+          new Promise((_, no) => setTimeout(() => no(new Error("geen antwoord")), 8000))]);
+        this._channels = r.channels || [];
+        this._entry = r.entry_id;
+        this._err = null;
+        break;
+      } catch (e) {
+        if (run !== this._initRun) return;
+        if (!this.isConnected) { this._initRun++; this._initAborted = true; return; }   // connectedCallback start opnieuw
+        if (i >= 20) { this._err = "Recorder niet bereikbaar: " + (e.message || e.code || e); this._channels = []; break; }
+        const b = this.shadowRoot.querySelector(".empty");
+        if (b) b.textContent = "Laden… (Home Assistant start nog of de recorder antwoordt niet)";
+        await new Promise((r) => setTimeout(r, 3000));
+      }
     }
     if (this._sel.channel == null && this._channels.length) this._sel.channel = this._channels[0].channel;
     this._ready = true;
