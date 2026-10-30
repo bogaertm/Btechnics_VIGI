@@ -32,7 +32,10 @@ class ReplayManager:
             raise ValueError("einde moet na het begin liggen")
         url = self.client.replay_url(channel, start, end)
         # zonder audio (keuze Matthias 30/10/2026): G.711 van de recorder kan HLS toch niet dragen
-        stream = create_stream(self.hass, url, {"rtsp_transport": "tcp"}, DynamicStreamSettings(),
+        # use_wallclock_as_timestamps: de recorder springt in een replay over gaten in de opname, waardoor HA de
+        # stream stopte ("Timestamp discontinuity detected", 30/10/2026: dts 55 s naar 393 s in een stuk van 27 s).
+        stream = create_stream(self.hass, url, {"rtsp_transport": "tcp", "use_wallclock_as_timestamps": True},
+                               DynamicStreamSettings(),
                                stream_label=f"VIGI replay kanaal {channel}")
         stream.add_provider(HLS_PROVIDER)
         await stream.start()
