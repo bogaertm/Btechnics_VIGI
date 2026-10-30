@@ -5,8 +5,9 @@ Home Assistant kent zelf enkel beheerder en gewone gebruiker. Daarbovenop (keuze
 - admin: gewone HA-gebruiker met alle beelden, opnames, foto's van de VTO, codebeheer en deur openen;
 - medewerker: gewone HA-gebruiker met alle codes (ook de code zelf), codes aanmaken en stopzetten, deur openen
   en het logboek van de laatste 24 uur zonder foto's.
-De rollen staan in .storage/btechnics_roles (gedeeld door beide koppelingen) en worden ingesteld in de
-instellingen van de koppeling Btechnics VTO. De koppelingen controleren de rol zelf bij elke aanvraag.
+De rollen staan in .storage/btechnics_roles (gedeeld door beide koppelingen) en worden ingesteld in het dashboard
+Gebruikers (kaart btechnics-vto-gebruikers, enkel superadmin) of in de instellingen van Btechnics VTO. Daar staat
+ook per dashboard welke rollen het zien ("dashboards"). De koppelingen controleren de rol bij elke aanvraag.
 """
 from __future__ import annotations
 
@@ -23,15 +24,31 @@ async def async_load(hass: HomeAssistant) -> dict:
     if KEY in hass.data:
         return hass.data[KEY]
     data = await Store(hass, 1, KEY).async_load() or {}
-    roles = {ADMIN: list(data.get(ADMIN, [])), MEDEWERKER: list(data.get(MEDEWERKER, []))}
+    roles = {ADMIN: list(data.get(ADMIN, [])), MEDEWERKER: list(data.get(MEDEWERKER, [])),
+             "dashboards": dict(data.get("dashboards", {}))}
     hass.data[KEY] = roles
     return roles
 
 
-async def async_save(hass: HomeAssistant, admins: list[str], medewerkers: list[str]) -> None:
-    roles = {ADMIN: sorted(set(admins)), MEDEWERKER: sorted(set(medewerkers) - set(admins))}
+async def async_save(hass: HomeAssistant, admins: list[str], medewerkers: list[str],
+                     dashboards: dict | None = None) -> None:
+    old = hass.data.get(KEY) or {}
+    roles = {ADMIN: sorted(set(admins)), MEDEWERKER: sorted(set(medewerkers) - set(admins)),
+             "dashboards": dict(old.get("dashboards", {}) if dashboards is None else dashboards)}
     await Store(hass, 1, KEY).async_save(roles)
     hass.data[KEY] = roles
+
+
+async def async_set_role(hass: HomeAssistant, user_id: str, new_role: str) -> None:
+    """Rol van één gebruiker in de opslag zetten (superadmin regelt HA zelf via de groep)."""
+    cur = await async_load(hass)
+    adm = [x for x in cur.get(ADMIN, []) if x != user_id]
+    med = [x for x in cur.get(MEDEWERKER, []) if x != user_id]
+    if new_role == ADMIN:
+        adm.append(user_id)
+    elif new_role == MEDEWERKER:
+        med.append(user_id)
+    await async_save(hass, adm, med)
 
 
 def role(hass: HomeAssistant, user) -> str:
