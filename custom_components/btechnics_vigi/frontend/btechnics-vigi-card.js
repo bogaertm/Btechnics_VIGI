@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.2";
+const VIGI_VERSION = "0.2.3";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -403,9 +403,41 @@ ha-card { padding: 12px 16px 16px; }
 // Registreren. Bij het laden van de pagina bleef de kaart soms onbekend terwijl het script wel liep
 // ("Configuratiefout", vastgesteld 30/10/2026; zelfde gedrag als in Btechnics VTO door de scoped registry van HA).
 // Daarom later opnieuw proberen tot de naam bekend is.
+// Een oude kopie van de pagina (service worker) laadt soms eerst een oudere versie van dit script; een custom
+// element kan niet opnieuw gedefinieerd worden. Dan de methodes van deze versie op de geregistreerde klasse
+// zetten en de kaarten opnieuw opbouwen (zelfde oplossing als Btechnics VTO, 26/09/2026).
+const vigiNewer = (a, b) => {
+  const v = (x) => String(x || "0").split(".").map(Number);
+  const [x, y] = [v(a), v(b)];
+  const i = x.findIndex((n, k) => n !== (y[k] || 0));
+  return i >= 0 && x[i] > (y[i] || 0);
+};
+const vigiUpgrade = (Cls) => {
+  if (!vigiNewer(VIGI_VERSION, Cls.__vigiVer)) return;
+  for (const k of Object.getOwnPropertyNames(BtechnicsVigiCard.prototype)) {
+    if (k === "constructor") continue;
+    Object.defineProperty(Cls.prototype, k, Object.getOwnPropertyDescriptor(BtechnicsVigiCard.prototype, k));
+  }
+  Cls.__vigiVer = VIGI_VERSION;
+  const walk = (root) => {
+    for (const el of root.querySelectorAll("*")) {
+      if (el.tagName === "BTECHNICS-VIGI-CARD" && el._hass) {
+        clearInterval(el._timer); el._timer = null;
+        try { el._stopPlayer && el._stopPlayer(); el._init(); } catch (e) { /* volgende kaart */ }
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(document);
+};
 const vigiDefine = () => {
-  if (customElements.get("btechnics-vigi-card")) return true;
-  try { customElements.define("btechnics-vigi-card", class extends BtechnicsVigiCard {}); } catch (e) { /* later opnieuw */ }
+  const cur = customElements.get("btechnics-vigi-card");
+  if (cur) { vigiUpgrade(cur); return true; }
+  try {
+    const R = class extends BtechnicsVigiCard {};
+    R.__vigiVer = VIGI_VERSION;
+    customElements.define("btechnics-vigi-card", R);
+  } catch (e) { /* later opnieuw */ }
   return !!customElements.get("btechnics-vigi-card");
 };
 vigiDefine();
