@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.5";
+const VIGI_VERSION = "0.2.6";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -303,7 +303,10 @@ class BtechnicsVigiCard extends HTMLElement {
     note.textContent = "Opname starten…";
     const host = this.shadowRoot.getElementById("player");
     host.innerHTML = "";
-    const end = Math.min(t + 3600, dayStart(nextDay(this._sel.day), this._tz));
+    // Tot het einde van dit stuk: over een gat heen springt de tijd en stopt HA de stream
+    // ("Timestamp discontinuity detected", vastgesteld 30/10/2026 op Cafe toog). Daarna automatisch het volgende stuk.
+    const end = Math.min(seg.end, t + 3600, dayStart(nextDay(this._sel.day), this._tz));
+    clearTimeout(this._nextT);
     const req = (this._req = (this._req || 0) + 1);
     let url;
     try {
@@ -323,12 +326,15 @@ class BtechnicsVigiCard extends HTMLElement {
     p.playsInline = true;
     p.allowExoPlayer = true;
     host.appendChild(p);
-    note.textContent = "Speelt af op normale snelheid, zonder geluid. Even wachten tot het beeld verschijnt.";
+    const volgend = segs.find((s) => s.start >= end);
+    note.textContent = `Speelt af tot ${hms(end, this._tz)} op normale snelheid, zonder geluid${volgend ? ", daarna automatisch het volgende stuk" : ""}. Even wachten tot het beeld verschijnt.`;
+    if (volgend) this._nextT = setTimeout(() => { if (req === this._req) this._play(volgend.start); }, (end - t + 6) * 1000);
     this.shadowRoot.getElementById("playwrap").scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   _stopPlayer(hide) {
     this._req = (this._req || 0) + 1;
+    clearTimeout(this._nextT);
     const host = this.shadowRoot && this.shadowRoot.getElementById("player");
     if (host) host.innerHTML = "";
     if (hide) {
@@ -390,8 +396,11 @@ ha-card { padding: 12px 16px 16px; }
 .segs { margin-top:12px; }
 .segs summary { cursor:pointer; color:var(--primary-color); padding:6px 0; }
 #segs { display:flex; flex-wrap:wrap; gap:6px; max-height:260px; overflow:auto; padding-top:6px; }
+.bar > * { min-width:0; max-width:100%; }
 @media (max-width: 600px) {
   ha-card { padding:10px; }
+  .days { flex-wrap:wrap; }
+  .days input { min-width:0; flex:1 1 140px; }
   .grid { grid-template-columns:1fr; }
   .bar { flex-direction:column; align-items:stretch; }
   .chips { flex-wrap:nowrap; overflow-x:auto; }

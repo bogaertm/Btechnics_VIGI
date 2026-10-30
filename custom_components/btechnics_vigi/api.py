@@ -263,8 +263,8 @@ class VigiClient:
         return self.rtsp_url(f"/replay/{channel}/{stream}/avm?starttime={utc_stamp(start)}&endtime={utc_stamp(end)}")
 
 
-def merge_segments(segs: list[dict], gap: int = 2) -> list[dict]:
-    """Aansluitende stukken (tot 2 s ertussen) samenvoegen; de recorder geeft kleine eenheden."""
+def merge_segments(segs: list[dict], gap: int = 20) -> list[dict]:
+    """Stukken met tot 20 s ertussen samenvoegen; HA verdraagt een tijdsprong tot 30 s in een stream (MAX_TIMESTAMP_GAP)."""
     out: list[dict] = []
     for s in sorted(segs, key=lambda x: x["start"]):
         if out and s["start"] - out[-1]["end"] <= gap:

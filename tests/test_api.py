@@ -66,8 +66,10 @@ def test_digest_zoals_document():
 
 
 def test_merge_gap():
-    assert merge_segments([{"start": 0, "end": 10}, {"start": 15, "end": 20}]) == [
-        {"start": 0, "end": 10}, {"start": 15, "end": 20}]
+    # tot 20 s ertussen = een stuk (HA verdraagt 30 s tijdsprong), meer = apart
+    assert merge_segments([{"start": 0, "end": 10}, {"start": 30, "end": 40}]) == [{"start": 0, "end": 40}]
+    assert merge_segments([{"start": 0, "end": 10}, {"start": 31, "end": 40}]) == [
+        {"start": 0, "end": 10}, {"start": 31, "end": 40}]
 
 
 async def test_zoekproces_wordt_hergebruikt(nvr):
