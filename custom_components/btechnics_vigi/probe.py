@@ -103,9 +103,12 @@ class _Rtsp:
             await self.w.drain()
             status, headers, body = await asyncio.wait_for(self._read_response(), 10)
             if status == 401 and poging == 1:
+                # standaard MD5 voor RTSP (API-document bijlage V); SHA-256 enkel als er geen MD5-uitdaging is
                 chs = headers.get("www-authenticate", [])
-                pick = next((c for c in chs if "SHA-256" in c.upper()), None) or (chs[0] if chs else "")
+                pick = next((c for c in chs if "SHA-256" not in c.upper()), None) or (chs[0] if chs else "")
                 self.auth = parse_challenge(pick)
+                if not self.auth.get("algorithm"):
+                    self.auth["algorithm"] = "MD5"
                 continue
             return status, headers, body
         return status, headers, body
