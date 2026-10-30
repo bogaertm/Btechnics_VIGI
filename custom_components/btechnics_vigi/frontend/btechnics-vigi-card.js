@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.0";
+const VIGI_VERSION = "0.3.1";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -173,7 +173,10 @@ class BtechnicsVigiCard extends HTMLElement {
     m.hidden = false;
     try {
       const { url } = await this._hass.callWS({ type: "btechnics_vigi/live", channel: ch });
+      const ok = await this._waitHls(url, () => this._liveCh === ch,
+        (s) => { const st = host.querySelector(".status"); if (st) st.textContent = `Live beeld starten… ${s} s (de eerste keer tot 15 s)`; });
       if (this._liveCh !== ch) return;
+      if (!ok) throw new Error("de camera antwoordt niet");
       host.innerHTML = "";
       host.appendChild(this._hlsPlayer(url));
     } catch (e) {
@@ -185,6 +188,25 @@ class BtechnicsVigiCard extends HTMLElement {
     this._liveCh = null;
     const m = this.shadowRoot && this.shadowRoot.getElementById("modal");
     if (m) { m.hidden = true; this.shadowRoot.getElementById("mlive").innerHTML = ""; }
+  }
+
+  // HA geeft de playlist pas als er 2 segmenten zijn (live: vaak meer dan 12 s, vastgesteld 30/10/2026);
+  // ha-hls-player geeft bij een 404 meteen op. Daarom eerst wachten tot het adres antwoordt.
+  async _waitHls(url, isCurrent, onWait) {
+    const abs = this._hass.hassUrl ? this._hass.hassUrl(url) : new URL(url, location.origin).href;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 45000) {
+      if (!isCurrent()) return false;
+      onWait && onWait(Math.round((Date.now() - t0) / 1000));
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 20000);
+      try {
+        const r = await fetch(abs, { signal: ac.signal, cache: "no-store" });
+        if (r.ok) return true;
+      } catch (e) { /* opnieuw */ } finally { clearTimeout(to); }
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    return false;
   }
 
   _hlsPlayer(url) {
@@ -493,10 +515,14 @@ class BtechnicsVigiCard extends HTMLElement {
     if (req !== this._req) return;
     if (st.url && this._cur.mode === "stream") {
       this._cur.streamUrl = st.url;
+      const ok = await this._waitHls(st.url, () => req === this._req && this._cur && this._cur.mode === "stream",
+        (s) => this._setStatus(`Verbinden met de recorder… ${s} s`));
+      if (!ok || req !== this._req || this._cur.mode !== "stream") return;
       const vb = $("vbox");
       vb.querySelectorAll("ha-hls-player,video").forEach((x) => x.remove());
       vb.insertBefore(this._hlsPlayer(st.url), vb.firstChild);
       this._cur.streamStart = Date.now();
+      this._setStatus(null);
     }
     this._pollClip(req);
   }

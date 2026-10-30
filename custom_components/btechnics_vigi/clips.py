@@ -104,7 +104,9 @@ class ClipManager:
         for c in self.clips.values():
             if c.channel == channel and c.start == start and c.end == end and c.state != "error":
                 return c
-        pieces = split_pieces(parts or [[start, end]], start, end)
+        # zo verdelen dat er 3 delen tegelijk lopen (min 8 s per deel, max 2 min)
+        rec = sum(max(0, min(b, end) - max(a, start)) for a, b in (parts or [[start, end]]))
+        pieces = split_pieces(parts or [[start, end]], start, end, max_piece=min(120, max(8, -(-rec // PARALLEL))))
         if not pieces:
             raise ValueError("geen opname in dit venster")
         await self.hass.async_add_executor_job(self._cleanup)
