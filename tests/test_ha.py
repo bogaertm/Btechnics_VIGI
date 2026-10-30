@@ -173,3 +173,25 @@ async def test_opnamebestanden_niet_in_config(hass, via_fake):
     folder = hass.data[DOMAIN][e.entry_id].clips.folder
     assert not str(folder).startswith(hass.config.config_dir)
     assert not old.exists()
+
+
+async def test_rol_admin_zonder_ha_beheerrechten(hass, via_fake, hass_ws_client):
+    """Rollen (gelezen uit Btechnics IOT via hass.data): Admin ziet opnames, Medewerker en gewone gebruiker niet."""
+    from custom_components.btechnics_vigi import roles
+    await _setup(hass)
+
+    async def tok(name):
+        u = await hass.auth.async_create_user(name, group_ids=["system-users"])
+        rt = await hass.auth.async_create_refresh_token(u, "https://example.com/app")
+        return u, hass.auth.async_create_access_token(rt)
+    ine, t_ine = await tok("Ine")
+    arne, t_arne = await tok("Arne")
+    hass.data[roles.KEY] = {"admin": [ine.id], "medewerker": [arne.id], "dashboards": {}}
+    for t, ok in ((t_ine, True), (t_arne, False)):
+        ws = await hass_ws_client(hass, t)
+        await ws.send_json({"id": 1, "type": f"{DOMAIN}/channels"})
+        r = await ws.receive_json()
+        assert r["result"]["admin"] is ok
+        await ws.send_json({"id": 2, "type": f"{DOMAIN}/record/days", "channel": 1})
+        r = await ws.receive_json()
+        assert r["success"] is ok, r
