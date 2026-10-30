@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.2";
+const VIGI_VERSION = "0.3.3";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -241,12 +241,13 @@ class BtechnicsVigiCard extends HTMLElement {
     while (Date.now() - t0 < 45000) {
       if (!isCurrent()) return false;
       onWait && onWait(Math.round((Date.now() - t0) / 1000));
+      const tk = setInterval(() => onWait && isCurrent() && onWait(Math.round((Date.now() - t0) / 1000)), 1000);
       const ac = new AbortController();
-      const to = setTimeout(() => ac.abort(), 20000);
+      const to = setTimeout(() => { ac.abort(); }, 20000);
       try {
         const r = await fetch(abs, { signal: ac.signal, cache: "no-store" });
         if (r.ok) return true;
-      } catch (e) { /* opnieuw */ } finally { clearTimeout(to); }
+      } catch (e) { /* opnieuw */ } finally { clearTimeout(to); clearInterval(tk); }
       await new Promise((res) => setTimeout(res, 1000));
     }
     return false;
@@ -447,7 +448,7 @@ class BtechnicsVigiCard extends HTMLElement {
     const segs = this._segs || [];
     $("dtitle").textContent = `${this._chName(this._sel.channel)} · ${dayLabel(this._sel.day, true)}`;
     const tot = segs.reduce((a, s) => a + (s.end - s.start), 0);
-    $("dinfo").textContent = msg || (segs.length ? `${segs.length} stukken, samen ${dur(tot)} opgenomen` : "Geen opnames op deze dag.");
+    $("dinfo").textContent = msg || (segs.length ? `${segs.length} ${segs.length === 1 ? "stuk" : "stukken"}, samen ${dur(tot)} opgenomen` : "Geen opnames op deze dag.");
     // uren: hoeveel van elk uur is opgenomen
     const d0 = dayStart(this._sel.day, this._tz);
     const offs = this._hourOffsets();
@@ -530,13 +531,14 @@ class BtechnicsVigiCard extends HTMLElement {
   /* ---- speler ---- */
   _segAt(t) { return (this._segs || []).find((s) => t >= s.start && t < s.end); }
 
-  async _play(t) {
+  async _play(t, endHint) {
     t = Math.floor(t);
     const segs = this._segs || [];
     const seg = this._segAt(t) || segs.find((s) => s.start > t);
     if (!seg) return;
     if (t < seg.start) t = seg.start;
-    const end = Math.min(seg.end, t + 900);   // venster van max 15 min (ca. 5 min binnenhalen)
+    // eerste venster kort (3 min, binnen na ca. 1 min), daarna 10 min vooraf binnenhalen (zie _prefetchNext)
+    const end = endHint || Math.min(seg.end, t + 180);
     this._stopAll(false);
     const req = (this._req = (this._req || 0) + 1);
     this._cur = { req, channel: this._sel.channel, start: t, end, seg, mode: "stream", clip: null, startedAt: Date.now() };
@@ -726,20 +728,26 @@ class BtechnicsVigiCard extends HTMLElement {
 
   _onEnded() {
     if (!this._cur || !this._auto) return;
-    const c = this._cur;
-    // audit: venster stopte na 1 uur of sloeg de rest van een lang stuk over
-    if (c.end < c.seg.end - 1) { this._play(c.end); return; }
-    const n = (this._segs || []).find((s) => s.start >= c.seg.end);
-    if (n) this._play(n.start);
+    // audit: venster stopte na 1 uur of sloeg de rest van een lang stuk over: verder met het volgende venster
+    const w = this._nextWindow();
+    if (w) { const sp = this._speed; this._play(w.start, w.end).then(() => { this._speed = sp; }); }
     else this._setStatus(null, "Einde van de opnames op deze dag.");
   }
 
-  _prefetchNext() {
+  _nextWindow() {
     const c = this._cur;
-    if (!c) return;
+    if (!c) return null;
+    if (c.end < c.seg.end - 1) return { seg: c.seg, start: c.end, end: Math.min(c.seg.end, c.end + 600) };
     const n = (this._segs || []).find((s) => s.start >= c.seg.end);
-    if (!n || n.end - n.start > 180) return;   // enkel korte stukken vooraf binnenhalen
-    this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: n.start, end: n.end, parts: n.parts }).catch(() => {});
+    return n ? { seg: n, start: n.start, end: Math.min(n.end, n.start + 180) } : null;
+  }
+
+  _prefetchNext() {
+    // het volgende venster alvast binnenhalen (zelfde grenzen als _play, dan hergebruikt de server het)
+    const w = this._nextWindow();
+    if (!w) return;
+    const parts = (w.seg.parts || [[w.seg.start, w.seg.end]]).filter((p) => p[1] > w.start && p[0] < w.end);
+    this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: w.start, end: w.end, parts }).catch(() => {});
   }
 
   async _download() {
