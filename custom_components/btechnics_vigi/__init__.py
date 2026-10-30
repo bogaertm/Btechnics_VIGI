@@ -94,6 +94,18 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
         return next((d for d in self.data or [] if d["channel"] == ch), None)
 
 
+def _drop_old_clips(base: Path) -> None:
+    """Tot v0.3.8 stonden de bestanden rechtstreeks in de map; nu per koppeling in een submap."""
+    import shutil  # noqa: PLC0415
+    if not base.exists():
+        return
+    for f in base.iterdir():
+        if f.suffix == ".mp4" and f.is_file():
+            f.unlink(missing_ok=True)
+        elif f.suffix == ".tmp" and f.is_dir():
+            shutil.rmtree(f, True)
+
+
 def _platforms(entry: ConfigEntry) -> list[Platform]:
     # Camera-entiteiten enkel als gekozen (Audit 30/10/2026: camera.record en camera.snapshot zijn ook voor
     # gewone gebruikers bruikbaar en kunnen beelden naar /config/www schrijven, publiek via /local).
@@ -105,6 +117,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = VigiClient(session, entry.data[CONF_HOST], entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
     coord = VigiCoordinator(hass, entry, client)
     await coord.async_config_entry_first_refresh()
+    await hass.async_add_executor_job(_drop_old_clips, Path(hass.config.path("btechnics_vigi_clips")))
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coord
     async_register_ws(hass)
     async_register_views(hass)
