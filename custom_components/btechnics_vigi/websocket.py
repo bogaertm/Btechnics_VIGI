@@ -11,7 +11,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .api import VigiError
-from . import roles
 from .const import DOMAIN
 
 _REG = f"{DOMAIN}_ws_registered"
@@ -46,7 +45,7 @@ async def ws_channels(hass, connection, msg):
     if not c:
         connection.send_error(msg["id"], "not_found", "geen recorder")
         return
-    admin = roles.is_admin(hass, connection.user)
+    admin = connection.user.is_admin
     # Audit 30/10/2026: gewone gebruikers kregen IP en MAC van recorder en camera's
     chans = [d if admin else {"channel": d["channel"], "name": d["name"], "online": d["online"]}
              for d in (c.data or [])]
@@ -63,7 +62,7 @@ def _hide_pw(txt: str, pw: str) -> str:
 
 
 def _admin_coord(hass, connection, msg):
-    if not roles.is_admin(hass, connection.user):
+    if not connection.user.is_admin:
         connection.send_error(msg["id"], "unauthorized", "enkel beheerders")
         return None
     c = _coord(hass, msg.get("entry_id"))

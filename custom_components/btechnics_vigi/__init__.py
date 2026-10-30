@@ -121,8 +121,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coord = VigiCoordinator(hass, entry, client)
     await coord.async_config_entry_first_refresh()
     await hass.async_add_executor_job(_drop_old_clips, Path(hass.config.path("btechnics_vigi_clips")))
-    from . import roles  # noqa: PLC0415
-    await roles.async_load(hass)
     await coord.events.async_load()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coord
     async_register_ws(hass)

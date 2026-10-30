@@ -49,9 +49,8 @@ def _coords(hass: HomeAssistant):
 
 
 def _admin(request) -> bool:
-    """Superadmin (HA-beheerder) of de rol Admin (roles.py, ingesteld in Btechnics VTO)."""
-    from . import roles  # noqa: PLC0415
-    return roles.is_admin(request.app["hass"], request.get("hass_user"))
+    user = request.get("hass_user")
+    return bool(user and user.is_admin)
 
 
 class SnapshotView(HomeAssistantView):
