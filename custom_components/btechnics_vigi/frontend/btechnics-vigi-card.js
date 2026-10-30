@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.9";
+const VIGI_VERSION = "0.3.10";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -787,8 +787,33 @@ class BtechnicsVigiCard extends HTMLElement {
       w = this._nextWindow();
       if (w && w.end - w.start < 3) w = null;   // opname loopt nog maar is nog niet beschikbaar
     }
+    if (!w && this._sel.day < todayStr(this._tz)) {
+      // na middernacht verder met de volgende dag met opnames (vraag Matthias 30/10/2026)
+      if (await this._nextDay()) return;
+    }
     if (w) this._play(w.start, w.end, true);
     else this._setStatus(null, this._sel.day === todayStr(this._tz) ? "Einde van de opnames tot nu." : "Einde van de opnames op deze dag.");
+  }
+
+  async _nextDay() {
+    const req = this._req, ch = this._sel.channel, today = todayStr(this._tz);
+    const known = this._days[ch];
+    let day = this._sel.day;
+    for (let i = 0; i < 14; i++) {
+      day = addDays(day, 1);
+      if (day > today) return false;
+      if (known && known.size && !known.has(day) && day !== today) continue;   // geen opnames die dag
+      this._setStatus(null, `Volgende dag: ${dayLabel(day)}, opnames zoeken…`);
+      this._sel.day = day; this._sel.hour = null;
+      const y = +day.slice(0, 4), m = +day.slice(4, 6);
+      if (!this._cal || this._cal.y !== y || this._cal.m !== m) { this._cal = { y, m }; this._loadDays(); }
+      this._drawCalendar();
+      await this._loadDay();
+      if (req !== this._req || ch !== this._sel.channel || day !== this._sel.day) return true;   // intussen iets anders gekozen
+      const first = (this._segs || [])[0];
+      if (first) { this._play(first.start, Math.min(first.end, first.start + 300), true); return true; }
+    }
+    return false;
   }
 
   // stukken opnieuw ophalen zonder de tijdlijn leeg te maken
