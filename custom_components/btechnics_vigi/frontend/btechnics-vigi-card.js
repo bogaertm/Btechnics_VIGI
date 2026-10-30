@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.4.0";
+const VIGI_VERSION = "0.4.1";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -1010,7 +1010,7 @@ button { font:inherit; color:var(--primary-text-color); }
 .help ul { margin:0; padding-left:18px; } .help kbd { border:1px solid var(--divider-color); border-radius:4px; padding:0 4px; font-size:.8rem; }
 .evbar { position:relative; height:12px; margin-bottom:2px; }
 .ev { position:absolute; top:2px; width:8px; height:8px; margin-left:-4px; border-radius:50%; display:inline-block; }
-.legend .ev, .evb .ev { position:static; margin:0 4px 0 0; vertical-align:middle; }
+.legend .ev, .evb .ev, .help .ev { position:static; margin:0 4px 0 0; vertical-align:middle; }
 .k-beweging { background:#F59E32; } .k-persoon { background:#ED6928; } .k-voertuig { background:#3b82f6; } .k-andere { background:#9e9e9e; }
 .legend { display:flex; flex-wrap:wrap; gap:4px 14px; align-items:center; font-size:.8rem; color:var(--secondary-text-color); margin:2px 0 8px; }
 .legend .lrec { display:inline-block; width:14px; height:8px; background:var(--primary-color); opacity:.8; border-radius:2px; vertical-align:middle; margin-right:4px; }
