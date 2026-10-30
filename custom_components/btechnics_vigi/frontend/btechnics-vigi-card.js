@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.7";
+const VIGI_VERSION = "0.3.8";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -526,12 +526,17 @@ class BtechnicsVigiCard extends HTMLElement {
     tip.hidden = false;
   }
 
-  _clickTimeline(ev) {
+  async _clickTimeline(ev, again) {
     let t = this._timeAt(ev);
     const segs = this._segs || [];
     if (!segs.find((s) => t >= s.start && t < s.end)) {
       const n = segs.find((s) => s.start > t);
-      if (!n) { this.shadowRoot.getElementById("dinfo").textContent = "Na dit tijdstip is er niets opgenomen op deze dag."; return; }
+      if (!n) {
+        // vandaag na het laatste gekende stuk: eerst opnieuw zoeken, intussen kan er meer opgenomen zijn
+        if (!again && this._sel.day === todayStr(this._tz)) { await this._refreshSegs(); return this._clickTimeline(ev, true); }
+        this.shadowRoot.getElementById("dinfo").textContent = "Na dit tijdstip is er niets opgenomen op deze dag.";
+        return;
+      }
       t = n.start;
     }
     this._play(t);
@@ -745,12 +750,35 @@ class BtechnicsVigiCard extends HTMLElement {
     }
   }
 
-  _onEnded() {
+  async _onEnded() {
     if (!this._cur || !this._auto) return;
     // audit: venster stopte na 1 uur of sloeg de rest van een lang stuk over: verder met het volgende venster
-    const w = this._nextWindow();
+    let w = this._nextWindow();
+    // vandaag: de lijst van stukken is van bij het openen. Eerst opnieuw zoeken, er kan intussen meer opgenomen zijn
+    // (test 30/10/2026: "Einde" terwijl de camera verder opnam).
+    if (!w && this._sel.day === todayStr(this._tz)) {
+      const req = this._req, at = this._cur.end;
+      this._setStatus(null, "Nieuwe opnames zoeken…");
+      await this._refreshSegs();
+      if (req !== this._req || !this._cur) return;
+      const seg = this._segAt(at - 1);
+      if (seg) this._cur.seg = seg;
+      w = this._nextWindow();
+      if (w && w.end - w.start < 3) w = null;   // opname loopt nog maar is nog niet beschikbaar
+    }
     if (w) this._play(w.start, w.end, true);
-    else this._setStatus(null, "Einde van de opnames op deze dag.");
+    else this._setStatus(null, this._sel.day === todayStr(this._tz) ? "Einde van de opnames tot nu." : "Einde van de opnames op deze dag.");
+  }
+
+  // stukken opnieuw ophalen zonder de tijdlijn leeg te maken
+  async _refreshSegs() {
+    const ch = this._sel.channel, day = this._sel.day;
+    try {
+      const r = await this._hass.callWS({ type: "btechnics_vigi/record/search", channel: ch, day });
+      if (ch !== this._sel.channel || day !== this._sel.day) return;
+      this._segs = r.segments || [];
+      this._drawDay();
+    } catch (e) { /* oude lijst blijft */ }
   }
 
   _nextWindow(from) {
