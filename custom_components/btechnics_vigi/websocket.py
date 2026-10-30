@@ -30,7 +30,7 @@ def async_register_ws(hass: HomeAssistant) -> None:
     if hass.data.get(_REG):
         return
     hass.data[_REG] = True
-    for f in (ws_channels, ws_days, ws_search, ws_replay, ws_probe):
+    for f in (ws_channels, ws_days, ws_search, ws_replay, ws_probe, ws_replay_probe):
         websocket_api.async_register_command(hass, f)
 
 
@@ -125,3 +125,33 @@ async def ws_probe(hass, connection, msg):
         connection.send_error(msg["id"], "vigi_error", str(e))
         return
     connection.send_result(msg["id"], res)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/replay_probe", vol.Optional("entry_id"): str,
+                                  vol.Required("channel"): int, vol.Required("start"): int, vol.Required("end"): int,
+                                  vol.Optional("tests", default=["ffmpeg", "rtsp", "scale2", "scale4", "scale8", "speed4"]): [str],
+                                  vol.Optional("seconds", default=8): vol.All(int, vol.Range(min=3, max=30))})
+@websocket_api.async_response
+async def ws_replay_probe(hass, connection, msg):
+    """Diagnose: meet hoe snel de recorder een opname levert (enkel lezen)."""
+    from .probe import ffmpeg_speed, rtsp_rate  # noqa: PLC0415
+
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    url = c.client.replay_url(msg["channel"], msg["start"], msg["end"])
+    sec = msg["seconds"]
+    heads = {"rtsp": None, "scale2": {"Scale": "2.0"}, "scale4": {"Scale": "4.0"}, "scale8": {"Scale": "8.0"},
+             "speed4": {"Speed": "4.0"}, "speed8": {"Speed": "8.0"}, "ratecontrol": {"Rate-Control": "no"}}
+    out = {}
+    for t in msg["tests"]:
+        if t == "ffmpeg":
+            try:
+                from homeassistant.components.ffmpeg import get_ffmpeg_manager  # noqa: PLC0415
+                binary = get_ffmpeg_manager(hass).binary
+            except Exception:  # noqa: BLE001
+                binary = "ffmpeg"
+            out[t] = await ffmpeg_speed(binary, url, sec + 4)
+        elif t in heads:
+            out[t] = await rtsp_rate(url, c.client.username, c.client._password, heads[t], sec)
+    connection.send_result(msg["id"], out)
