@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.4";
+const VIGI_VERSION = "0.2.5";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -458,8 +458,12 @@ const vigiDefine = () => {
   return !!customElements.get("btechnics-vigi-card");
 };
 vigiDefine();
-[0, 250, 1000, 3000, 8000, 15000].forEach((ms) => setTimeout(vigiDefine, ms));
+// De kaart verschijnt soms pas na 15 s of meer (trage start van de Pi, vastgesteld 30/10/2026): twee minuten
+// lang elke 2 s nakijken, en bij elke paginawissel binnen HA.
+let vigiTries = 0;
+const vigiTick = setInterval(() => { vigiDefine(); if (++vigiTries >= 60) clearInterval(vigiTick); }, 2000);
 window.addEventListener("load", vigiDefine);
+window.addEventListener("location-changed", () => setTimeout(vigiDefine, 500));
 window.customCards = window.customCards || [];
 if (!window.customCards.find((c) => c.type === "btechnics-vigi-card"))
   window.customCards.push({ type: "btechnics-vigi-card", name: "Btechnics VIGI", description: "Live raster en opnames van de VIGI recorder" });
