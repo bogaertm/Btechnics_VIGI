@@ -18,6 +18,8 @@ class FakeNVR:
         self.calls = []
         self.segments = [(1793350000 + i * 30, 1793350000 + i * 30 + 30) for i in range(150)] + [(1793360000, 1793360100)]
         self.expire_next = False
+        self.procs = []
+        self.busy_next = 0
 
     def app(self):
         a = web.Application()
@@ -71,8 +73,16 @@ class FakeNVR:
         if p == "record/days":
             return web.json_response({"days": [{"day": "20261029"}, {"day": DAY}], "error_code": 0})
         if p == "record/search/free_process":
-            return web.json_response({"process": 6, "error_code": 0})
+            if len(self.procs) >= 4:   # echte recorder: max 4 clients (-71101)
+                return web.json_response({"error_code": -71101})
+            self.procs.append(len(self.procs) + 1)
+            return web.json_response({"process": self.procs[-1], "error_code": 0})
         if p == "record/search/results":
+            if int(req.query["process"]) not in self.procs:
+                return web.json_response({"error_code": -71103})
+            if self.busy_next:
+                self.busy_next -= 1
+                return web.json_response({"error_code": -71115})
             s, e = int(req.query["start_index"]), int(req.query["end_index"])
             if e - s + 1 > 100:
                 return web.json_response({"error_code": -40201})

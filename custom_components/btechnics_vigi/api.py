@@ -23,6 +23,10 @@ from .const import OPENAPI_PORT, REPLAY_STREAM, RTSP_PORT
 class VigiError(Exception):
     """Fout van de recorder of de verbinding."""
 
+    def __init__(self, msg: str, code: int | None = None) -> None:
+        super().__init__(msg)
+        self.code = code
+
 
 class VigiAuthError(VigiError):
     """Gebruiker of wachtwoord geweigerd."""
@@ -85,6 +89,8 @@ class VigiClient:
         self._refresh: str | None = None
         self._expires = 0.0
         self._lock = asyncio.Lock()
+        self._search_lock = asyncio.Lock()
+        self._proc: int | None = None
 
     @property
     def base(self) -> str:
@@ -156,7 +162,7 @@ class VigiClient:
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 raise VigiError(f"{path}: {e.__class__.__name__} {e}") from e
             if isinstance(data, dict) and data.get("error_code", 0) != 0:
-                raise VigiError(f"{path}: foutcode {data.get('error_code')}")
+                raise VigiError(f"{path}: foutcode {data.get('error_code')}", data.get("error_code"))
             return data
         raise VigiError(f"{path}: geweigerd na nieuw token")
 
@@ -181,20 +187,62 @@ class VigiClient:
                                params={"channel": channel, "start": start, "end": end})
         return [x["day"] for x in d.get("days", []) if x.get("day")]
 
+    # Zoekprocessen: de recorder kent er maximaal 4 per keer (foutcode -71101, API-document bijlage I).
+    # Daarom een proces aanvragen en hergebruiken, en zoekopdrachten na elkaar uitvoeren.
+    BUSY = (-71115, -40109)          # zoekt nog / systeem bezig: even wachten
+    FULL = -71101                    # geen vrij zoekproces
+    STALE = (-71103, -71102)         # proces-id ongeldig of bezet: nieuw aanvragen
+
+    async def _free_process(self) -> int:
+        for poging in range(4):
+            try:
+                proc = (await self.request("GET", "/openapi/record/search/free_process")).get("process")
+                if proc is None:
+                    raise VigiError("geen vrij zoekproces")
+                return int(proc)
+            except VigiError as e:
+                if e.code != self.FULL or poging == 3:
+                    raise
+                await asyncio.sleep(2 + 2 * poging)
+        raise VigiError("geen vrij zoekproces")
+
+    async def _results(self, params: dict) -> dict:
+        for poging in range(8):
+            try:
+                return await self.request("GET", "/openapi/record/search/results", params=params)
+            except VigiError as e:
+                if e.code in self.BUSY and poging < 7:
+                    await asyncio.sleep(1)
+                    continue
+                raise
+        raise VigiError("zoeken duurt te lang")
+
     async def record_search(self, channel: int, day: str, page: int = 100, limit: int = 5000) -> list[dict]:
         """Opnamestukken van een dag (YYYYMMDD) als {start, end} epoch, opeenvolgende stukken samengevoegd."""
-        proc = (await self.request("GET", "/openapi/record/search/free_process")).get("process")
-        if proc is None:
-            raise VigiError("geen vrij zoekproces")
+        async with self._search_lock:
+            for herstart in (1, 2):
+                if self._proc is None:
+                    self._proc = await self._free_process()
+                try:
+                    return merge_segments(await self._search(self._proc, channel, day, page, limit))
+                except VigiError as e:
+                    if e.code in self.STALE and herstart == 1:
+                        self._proc = None
+                        continue
+                    raise
+        return []
+
+    async def _search(self, proc: int, channel: int, day: str, page: int, limit: int) -> list[dict]:
         res: list[dict] = []
         start = 0
         while start < limit:
             try:
-                d = await self.request("GET", "/openapi/record/search/results", params={
-                    "channel": channel, "process": proc, "day": day,
-                    "start_index": start, "end_index": start + page - 1})
-            except VigiError:
+                d = await self._results({"channel": channel, "process": proc, "day": day,
+                                         "start_index": start, "end_index": start + page - 1})
+            except VigiError as e:
                 if start == 0:
+                    if e.code in (-71104, -40205):  # geen opnames die dag
+                        return []
                     raise
                 break  # start_index voorbij het einde
             batch = d.get("results") or []
@@ -202,7 +250,7 @@ class VigiClient:
             if len(batch) < page:
                 break
             start += page
-        return merge_segments(res)
+        return res
 
     def rtsp_url(self, path: str) -> str:
         cred = f"{quote(self.username, safe='')}:{quote(self._password, safe='')}@"

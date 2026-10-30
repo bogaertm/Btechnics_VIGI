@@ -68,3 +68,36 @@ def test_digest_zoals_document():
 def test_merge_gap():
     assert merge_segments([{"start": 0, "end": 10}, {"start": 15, "end": 20}]) == [
         {"start": 0, "end": 10}, {"start": 15, "end": 20}]
+
+
+async def test_zoekproces_wordt_hergebruikt(nvr):
+    """Echte recorder: max 4 zoekprocessen (-71101). Zes zoekopdrachten mogen er maar een gebruiken."""
+    async with aiohttp.ClientSession() as s:
+        c = client(s, nvr)
+        for day in ("20261025", "20261026", "20261027", "20261028", "20261029", "20261030"):
+            await c.record_search(3, day)
+    assert nvr.calls.count("record/search/free_process") == 1
+
+
+async def test_zoeken_wacht_als_recorder_nog_zoekt(nvr, monkeypatch):
+    import asyncio as aio
+    real = aio.sleep
+    monkeypatch.setattr("custom_components.btechnics_vigi.api.asyncio.sleep", lambda s: real(0))
+    nvr.busy_next = 2
+    async with aiohttp.ClientSession() as s:
+        segs = await client(s, nvr).record_search(1, "20261030")
+    assert len(segs) == 2
+
+
+async def test_vol_en_ongeldig_proces(nvr, monkeypatch):
+    import asyncio as aio
+    real = aio.sleep
+    monkeypatch.setattr("custom_components.btechnics_vigi.api.asyncio.sleep", lambda s: real(0))
+    nvr.procs = [1, 2, 3, 4]   # alle 4 bezet door iets anders
+    async with aiohttp.ClientSession() as s:
+        c = client(s, nvr)
+        with pytest.raises(Exception):
+            await c.record_search(1, "20261030")
+        nvr.procs = [9]         # er komt er een vrij; ons oude id bestaat niet meer
+        c._proc = 7
+        assert len(await c.record_search(1, "20261030")) == 2

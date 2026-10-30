@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.1";
+const VIGI_VERSION = "0.2.2";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
