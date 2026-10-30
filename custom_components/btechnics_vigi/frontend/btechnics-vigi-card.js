@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.4.1";
+const VIGI_VERSION = "0.4.2";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -561,7 +561,7 @@ class BtechnicsVigiCard extends HTMLElement {
     el.innerHTML = zoom && evs.length ? `<div class="sub">Meldingen</div>` + evs.slice(0, 120).map((e) =>
       `<button class="evb" data-t="${Math.floor(e[0]) - 5}"><i class="ev k-${cls(e[1])}"></i>${hms(Math.floor(e[0]), this._tz)} <span class="sub">${esc(e[2])}</span></button>`).join("")
       + (evs.length > 120 ? `<span class="sub">en nog ${evs.length - 120}</span>` : "") : "";
-    el.querySelectorAll(".evb").forEach((p) => p.addEventListener("click", () => this._play(+p.dataset.t)));
+    el.querySelectorAll(".evb").forEach((p) => p.addEventListener("click", () => this._playAt(+p.dataset.t)));
     // in een uur: de stukken als lijst (overzichtelijk, enkel dat uur)
     const list = $("pieces");
     list.innerHTML = zoom
@@ -600,6 +600,17 @@ class BtechnicsVigiCard extends HTMLElement {
         return;
       }
       t = n.start;
+    }
+    this._play(t);
+  }
+
+  // afspelen vanaf een melding: een melding van net kan nog na het laatste gekende stuk vallen (test 30/10/2026)
+  async _playAt(t) {
+    const later = () => !this._segAt(t) && !(this._segs || []).some((x) => x.start > t);
+    if (later() && this._sel.day === todayStr(this._tz)) await this._refreshSegs();
+    if (later()) {
+      this.shadowRoot.getElementById("dinfo").textContent = "Deze melding staat nog niet in de opnames van de recorder. Probeer over een minuut opnieuw.";
+      return;
     }
     this._play(t);
   }
