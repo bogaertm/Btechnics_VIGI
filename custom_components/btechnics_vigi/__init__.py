@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from .websocket import async_register_ws
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.CAMERA, Platform.BINARY_SENSOR]
 CARDS_URL = "/btechnics_vigi_static"
+CLIPS_BASE = Path(tempfile.gettempdir()) / "btechnics_vigi_clips"
 CARDS_FILE = "btechnics-vigi-card.js"
 _CARDS_KEY = f"{DOMAIN}_cards"
 
@@ -77,7 +79,9 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
         self.client = client
         self.entry = entry
         self.replay = ReplayManager(hass, client)
-        self.clips = ClipManager(hass, client, Path(hass.config.path("btechnics_vigi_clips", entry.entry_id)),
+        # tijdelijke map in de container, NIET in /config: alles in /config gaat mee in elke back-up
+        # (31/10/2026: volledige back-up 497 MB in plaats van ca. 120 MB door de opnamebestanden)
+        self.clips = ClipManager(hass, client, CLIPS_BASE / entry.entry_id,
                                  streams=lambda: self.replay.count)
         self.snapshots = SnapshotCache(client)
         self.live = LiveManager(hass, client)
@@ -98,15 +102,10 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
 
 
 def _drop_old_clips(base: Path) -> None:
-    """Tot v0.3.8 stonden de bestanden rechtstreeks in de map; nu per koppeling in een submap."""
+    """Oude map /config/btechnics_vigi_clips (tot v0.5.1) volledig weg: ze ging mee in elke back-up."""
     import shutil  # noqa: PLC0415
-    if not base.exists():
-        return
-    for f in base.iterdir():
-        if f.suffix == ".mp4" and f.is_file():
-            f.unlink(missing_ok=True)
-        elif f.suffix == ".tmp" and f.is_dir():
-            shutil.rmtree(f, True)
+    if base.exists():
+        shutil.rmtree(base, True)
 
 
 def _platforms(entry: ConfigEntry) -> list[Platform]:

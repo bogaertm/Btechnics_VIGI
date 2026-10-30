@@ -161,3 +161,15 @@ async def test_meldingen_van_de_recorder(hass, via_fake, hass_client_no_auth, ha
     await ws.send_json({"id": 1, "type": f"{DOMAIN}/events", "channel": 1, "day": "20261030"})
     r = await ws.receive_json()
     assert r["success"] and r["result"]["events"][0][1] == "persoon"
+
+
+async def test_opnamebestanden_niet_in_config(hass, via_fake):
+    """31/10/2026: /config gaat mee in elke back-up; opnames horen in een tijdelijke map en de oude map gaat weg."""
+    from pathlib import Path
+    old = Path(hass.config.path("btechnics_vigi_clips"))
+    (old / "x").mkdir(parents=True, exist_ok=True)
+    (old / "x" / "a.mp4").write_bytes(b"x")
+    e = await _setup(hass)
+    folder = hass.data[DOMAIN][e.entry_id].clips.folder
+    assert not str(folder).startswith(hass.config.config_dir)
+    assert not old.exists()
