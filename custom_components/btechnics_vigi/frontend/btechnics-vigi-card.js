@@ -2,7 +2,7 @@
  * Opnames enkel voor beheerders (backend weigert ook: btechnics_vigi/record/* en replay zijn admin-only).
  * Speler: ha-hls-player van Home Assistant (haalt verbinding uit de context van de pagina, dus enkel binnen een dashboard).
  */
-const VIGI_VERSION = "0.2.3";
+const VIGI_VERSION = "0.2.4";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -412,27 +412,44 @@ const vigiNewer = (a, b) => {
   const i = x.findIndex((n, k) => n !== (y[k] || 0));
   return i >= 0 && x[i] > (y[i] || 0);
 };
-const vigiUpgrade = (Cls) => {
-  if (!vigiNewer(VIGI_VERSION, Cls.__vigiVer)) return;
-  for (const k of Object.getOwnPropertyNames(BtechnicsVigiCard.prototype)) {
-    if (k === "constructor") continue;
-    Object.defineProperty(Cls.prototype, k, Object.getOwnPropertyDescriptor(BtechnicsVigiCard.prototype, k));
-  }
-  Cls.__vigiVer = VIGI_VERSION;
+const vigiCards = () => {
+  const out = [];
   const walk = (root) => {
     for (const el of root.querySelectorAll("*")) {
-      if (el.tagName === "BTECHNICS-VIGI-CARD" && el._hass) {
-        clearInterval(el._timer); el._timer = null;
-        try { el._stopPlayer && el._stopPlayer(); el._init(); } catch (e) { /* volgende kaart */ }
-      }
+      if (el.tagName === "BTECHNICS-VIGI-CARD") out.push(el);
       if (el.shadowRoot) walk(el.shadowRoot);
     }
   };
   walk(document);
+  return out;
+};
+// Met de scoped registry van HA hoort de kaart op de pagina niet altijd bij de klasse die customElements.get
+// teruggeeft (vastgesteld 30/10/2026: kaart bleef 0.2.2, registry had 0.2.3). Daarom ook de klassen van de
+// kaarten die echt op de pagina staan bijwerken.
+const vigiUpgrade = (Cls) => {
+  const cards = vigiCards();
+  const classes = new Set([Cls, ...cards.map((c) => c.constructor)].filter((c) => c && c !== HTMLElement));
+  let changed = false;
+  for (const C of classes) {
+    if (!vigiNewer(VIGI_VERSION, C.__vigiVer)) continue;
+    for (const k of Object.getOwnPropertyNames(BtechnicsVigiCard.prototype)) {
+      if (k === "constructor") continue;
+      Object.defineProperty(C.prototype, k, Object.getOwnPropertyDescriptor(BtechnicsVigiCard.prototype, k));
+    }
+    C.__vigiVer = VIGI_VERSION;
+    changed = true;
+  }
+  if (!changed) return;
+  for (const el of cards) {
+    if (!el._hass) continue;
+    clearInterval(el._timer); el._timer = null;
+    try { el._stopPlayer && el._stopPlayer(); el._init(); } catch (e) { /* volgende kaart */ }
+  }
 };
 const vigiDefine = () => {
   const cur = customElements.get("btechnics-vigi-card");
-  if (cur) { vigiUpgrade(cur); return true; }
+  vigiUpgrade(cur);
+  if (cur) return true;
   try {
     const R = class extends BtechnicsVigiCard {};
     R.__vigiVer = VIGI_VERSION;
@@ -441,7 +458,7 @@ const vigiDefine = () => {
   return !!customElements.get("btechnics-vigi-card");
 };
 vigiDefine();
-[0, 250, 1000, 3000, 8000].forEach((ms) => setTimeout(vigiDefine, ms));
+[0, 250, 1000, 3000, 8000, 15000].forEach((ms) => setTimeout(vigiDefine, ms));
 window.addEventListener("load", vigiDefine);
 window.customCards = window.customCards || [];
 if (!window.customCards.find((c) => c.type === "btechnics-vigi-card"))
