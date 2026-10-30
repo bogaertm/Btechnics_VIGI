@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.6";
+const VIGI_VERSION = "0.3.7";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -626,11 +626,13 @@ class BtechnicsVigiCard extends HTMLElement {
     Object.assign(this._cur, { mode: "file", clip, video: v });
     v.addEventListener("loadedmetadata", () => {
       v.currentTime = Math.max(0, this._clockToMedia(clock));
+      v.defaultPlaybackRate = this._speed;
       v.playbackRate = this._speed;
       v.play().catch(() => {});
     }, { once: true });
-    v.addEventListener("ratechange", () => { if (Math.abs(v.playbackRate - this._speed) > 0.01) { this._speed = v.playbackRate; this._markSpeed(); } });
-    v.addEventListener("ended", () => this._onEnded());
+    // enkel de speler die nu speelt: een oude video meldt bij het loslaten (load) opnieuw 1x
+    v.addEventListener("ratechange", () => { if (this._cur && this._cur.video === v && v.readyState > 0 && Math.abs(v.playbackRate - this._speed) > 0.01) { this._speed = v.playbackRate; this._markSpeed(); } });
+    v.addEventListener("ended", () => { if (this._cur && this._cur.video === v) this._onEnded(); });
     v.addEventListener("error", () => this._setStatus(null, "Deze browser kan het bestand niet afspelen (H.265). Probeer Chrome, Safari of de HA-app, of download het."));
     this._setStatus(null, "Binnen: spoelen met de balk, snelheid kiezen, beeld per beeld bij pauze.");
     this._setControls();
