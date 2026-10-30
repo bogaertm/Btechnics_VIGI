@@ -5,7 +5,16 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.5";
+const VIGI_VERSION = "0.3.6";
+
+// Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
+// en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
+function dropMedia(box) {
+  box.querySelectorAll("ha-hls-player,video").forEach((x) => {
+    if (x.tagName === "VIDEO") { try { x.pause(); x.removeAttribute("src"); x.load(); } catch (e) { /* niets */ } }
+    x.remove();
+  });
+}
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -569,7 +578,7 @@ class BtechnicsVigiCard extends HTMLElement {
         (s) => this._setStatus(`Verbinden met de recorder… ${s} s`));
       if (!ok || req !== this._req || this._cur.mode !== "stream") return;
       const vb = $("vbox");
-      vb.querySelectorAll("ha-hls-player,video").forEach((x) => x.remove());
+      dropMedia(vb);
       vb.insertBefore(this._hlsPlayer(st.url), vb.firstChild);
       this._cur.streamStart = Date.now();
       this._setStatus(null);
@@ -609,7 +618,7 @@ class BtechnicsVigiCard extends HTMLElement {
     if (req !== this._req) return;
     this._stopStream();
     const vb = this.shadowRoot.getElementById("vbox");
-    vb.querySelectorAll("ha-hls-player,video").forEach((x) => x.remove());
+    dropMedia(vb);
     const v = document.createElement("video");
     v.controls = true; v.muted = true; v.playsInline = true; v.preload = "auto";
     v.src = signed;
@@ -785,7 +794,7 @@ class BtechnicsVigiCard extends HTMLElement {
     this._closeLive();
     const sr = this.shadowRoot;
     const vb = sr && sr.getElementById("vbox");
-    if (vb) vb.querySelectorAll("ha-hls-player,video").forEach((x) => { if (x.pause) x.pause(); x.remove(); });
+    if (vb) dropMedia(vb);
     if (hide !== false) {
       this._cur = null;
       const p = sr && sr.getElementById("player");
