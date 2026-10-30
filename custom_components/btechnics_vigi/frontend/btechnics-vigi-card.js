@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.4.2";
+const VIGI_VERSION = "0.5.0";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -72,7 +72,8 @@ class BtechnicsVigiCard extends HTMLElement {
   disconnectedCallback() { this._stopTimers(); this._stopAll(); }
 
   get _tz() { return (this._hass && this._hass.config && this._hass.config.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone; }
-  get _admin() { return !!(this._hass && this._hass.user && this._hass.user.is_admin); }
+  // superadmin (HA-beheerder) of de rol Admin (ingesteld in Btechnics VTO); de recorder-koppeling meldt het in channels
+  get _admin() { return this._roleAdmin != null ? this._roleAdmin : !!(this._hass && this._hass.user && this._hass.user.is_admin); }
 
   async _init() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -94,6 +95,7 @@ class BtechnicsVigiCard extends HTMLElement {
           new Promise((_, no) => setTimeout(() => no(new Error("geen antwoord")), 8000))]);
         this._channels = r.channels || [];
         this._entry = r.entry_id;
+        this._roleAdmin = !!r.admin;
         this._err = null;
         break;
       } catch (e) {
@@ -156,7 +158,7 @@ class BtechnicsVigiCard extends HTMLElement {
   _renderLive() {
     const body = this.shadowRoot.getElementById("body");
     const chs = this._channels || [];
-    if (!this._admin) { body.innerHTML = `<div class="empty">Live beeld is enkel voor beheerders.</div>`; return; }
+    if (!this._admin) { body.innerHTML = `<div class="empty">De camerabeelden zijn enkel voor de rollen Superadmin en Admin.</div>`; return; }
     if (!chs.length) { body.innerHTML = `<div class="empty">Geen camera's gevonden.</div>`; return; }
     body.innerHTML = `<div class="grid">${chs.map((c) => `
       <button class="tile ${c.online ? "" : "unavail"}" data-ch="${c.channel}">
@@ -1003,7 +1005,7 @@ ${admin ? `<h4>Opnames terugkijken</h4>
 <li>Per camera zijn er sensoren (beweging, persoon, voertuig) voor automatisaties, en het event <code>btechnics_vigi_event</code>.</li>
 <li>Markeringen bestaan pas vanaf het moment dat de meldingen aanstaan en blijven 14 dagen bewaard.</li></ul>
 <h4>Privacy</h4>
-<ul><li>Opnames zijn enkel zichtbaar voor beheerders. Beelden zijn persoonsgegevens: bekijk en deel ze enkel met een geldige reden (camerawet).</li></ul>` : `<p>Opnames terugkijken kan enkel voor beheerders.</p>`}`;
+<ul><li>Opnames zijn enkel zichtbaar voor de rollen Superadmin en Admin. Beelden zijn persoonsgegevens: bekijk en deel ze enkel met een geldige reden (camerawet).</li></ul>` : `<p>Opnames terugkijken kan enkel voor beheerders.</p>`}`;
 
 const CSS = `
 :host { display:block; outline:none; }

@@ -161,3 +161,25 @@ async def test_meldingen_van_de_recorder(hass, via_fake, hass_client_no_auth, ha
     await ws.send_json({"id": 1, "type": f"{DOMAIN}/events", "channel": 1, "day": "20261030"})
     r = await ws.receive_json()
     assert r["success"] and r["result"]["events"][0][1] == "persoon"
+
+
+async def test_rol_admin_zonder_ha_beheerrechten(hass, via_fake, hass_ws_client):
+    """Rollen (roles.py, gedeeld met Btechnics VTO): Admin ziet opnames, Medewerker en gewone gebruiker niet."""
+    from custom_components.btechnics_vigi import roles
+    await _setup(hass)
+
+    async def tok(name):
+        u = await hass.auth.async_create_user(name, group_ids=["system-users"])
+        rt = await hass.auth.async_create_refresh_token(u, "https://example.com/app")
+        return u, hass.auth.async_create_access_token(rt)
+    ine, t_ine = await tok("Ine")
+    arne, t_arne = await tok("Arne")
+    await roles.async_save(hass, [ine.id], [arne.id])
+    for t, ok in ((t_ine, True), (t_arne, False)):
+        ws = await hass_ws_client(hass, t)
+        await ws.send_json({"id": 1, "type": f"{DOMAIN}/channels"})
+        r = await ws.receive_json()
+        assert r["result"]["admin"] is ok
+        await ws.send_json({"id": 2, "type": f"{DOMAIN}/record/days", "channel": 1})
+        r = await ws.receive_json()
+        assert r["success"] is ok, r
