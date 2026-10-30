@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.3";
+const VIGI_VERSION = "0.3.4";
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = (n) => String(n).padStart(2, "0");
 const SPEEDS = [0.5, 1, 2, 4, 8, 16];
@@ -531,31 +531,36 @@ class BtechnicsVigiCard extends HTMLElement {
   /* ---- speler ---- */
   _segAt(t) { return (this._segs || []).find((s) => t >= s.start && t < s.end); }
 
-  async _play(t, endHint) {
+  async _play(t, endHint, cont) {
     t = Math.floor(t);
     const segs = this._segs || [];
     const seg = this._segAt(t) || segs.find((s) => s.start > t);
     if (!seg) return;
     if (t < seg.start) t = seg.start;
-    // eerste venster kort (3 min, binnen na ca. 1 min), daarna 10 min vooraf binnenhalen (zie _prefetchNext)
+    // eerste venster kort (3 min, binnen na ca. 1 min), daarna 5 min vooraf binnenhalen (zie _prefetchNext).
+    // Gemeten 30/10/2026: binnenhalen loopt ca. 2,4x sneller dan echte tijd, 5 min is dus binnen na ca. 2 min.
     const end = endHint || Math.min(seg.end, t + 180);
-    this._stopAll(false);
+    // cont (automatisch verder): geen stream starten. Die nam een plaats van de recorder in (max 4), vertraagde het
+    // binnenhalen en bleef hangen (test 30/10/2026). Het laatste beeld blijft staan tot het volgende venster binnen is.
+    if (cont) { const old = this._cur && this._cur.video; if (old) old.pause(); this._req = (this._req || 0) + 1; this._stopStream(); }
+    else this._stopAll(false);
     const req = (this._req = (this._req || 0) + 1);
-    this._cur = { req, channel: this._sel.channel, start: t, end, seg, mode: "stream", clip: null, startedAt: Date.now() };
+    this._cur = { req, channel: this._sel.channel, start: t, end, seg, mode: "stream", clip: null, startedAt: Date.now(), cont: !!cont };
     const $ = (id) => this.shadowRoot.getElementById(id);
     $("player").hidden = false;
     $("pname").textContent = `${this._chName(this._sel.channel)} · ${dayLabel(this._sel.day)} · venster ${hms(t, this._tz)} tot ${hms(end, this._tz)}`;
-    this._setStatus("Verbinden met de recorder…");
+    this._setStatus(cont ? null : "Verbinden met de recorder…", cont ? "Volgend stuk binnenhalen…" : null);
     this._setControls();
     $("player").scrollIntoView({ block: "nearest", behavior: "smooth" });
     // 1) meteen kijken (stream)  2) tegelijk binnenhalen (bestand)
     const parts = (seg.parts || [[seg.start, seg.end]]).filter((p) => p[1] > t && p[0] < end);
     const clipP = this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: t, end, parts }).catch((e) => ({ state: "error", error: e.message || e.code }));
-    const streamP = this._hass.callWS({ type: "btechnics_vigi/replay", channel: this._sel.channel, start: t, end }).catch((e) => ({ error: e.message || e.code }));
+    const streamP = cont ? null : this._hass.callWS({ type: "btechnics_vigi/replay", channel: this._sel.channel, start: t, end }).catch((e) => ({ error: e.message || e.code }));
     const clip = await clipP;
     if (req !== this._req) return;
     this._cur.clip = clip;
     if (clip.state === "ready") { this._toFile(clip, t); return; }
+    if (cont) { this._pollClip(req); return; }
     const st = await streamP;
     if (req !== this._req) return;
     if (st.url && this._cur.mode === "stream") {
@@ -576,8 +581,10 @@ class BtechnicsVigiCard extends HTMLElement {
     while (req === this._req && this._cur && this._cur.clip && this._cur.clip.clip_id && ["fetching", "joining"].includes(this._cur.clip.state)) {
       const c = this._cur.clip;
       const pct = Math.round((c.progress || 0) * 100);
-      this._setStatus(this._cur.streamStart ? null : "Verbinden met de recorder…",
-        c.state === "joining" ? "Samenvoegen…" : `Binnenhalen ${pct} % · spoelen, versnellen en downloaden zodra het binnen is`, c.progress);
+      const cont = this._cur.cont;
+      this._setStatus(this._cur.streamStart || cont ? null : "Verbinden met de recorder…",
+        c.state === "joining" ? "Samenvoegen…" : cont ? `Volgend stuk binnenhalen ${pct} %, het speelt daarna vanzelf verder`
+          : `Binnenhalen ${pct} % · spoelen, versnellen en downloaden zodra het binnen is`, c.progress);
       await new Promise((r) => setTimeout(r, 1000));
       if (req !== this._req) return;
       try { this._cur.clip = await this._hass.callWS({ type: "btechnics_vigi/clip/status", clip_id: c.clip_id }); }
@@ -730,14 +737,14 @@ class BtechnicsVigiCard extends HTMLElement {
     if (!this._cur || !this._auto) return;
     // audit: venster stopte na 1 uur of sloeg de rest van een lang stuk over: verder met het volgende venster
     const w = this._nextWindow();
-    if (w) { const sp = this._speed; this._play(w.start, w.end).then(() => { this._speed = sp; }); }
+    if (w) this._play(w.start, w.end, true);
     else this._setStatus(null, "Einde van de opnames op deze dag.");
   }
 
   _nextWindow() {
     const c = this._cur;
     if (!c) return null;
-    if (c.end < c.seg.end - 1) return { seg: c.seg, start: c.end, end: Math.min(c.seg.end, c.end + 600) };
+    if (c.end < c.seg.end - 1) return { seg: c.seg, start: c.end, end: Math.min(c.seg.end, c.end + 300) };
     const n = (this._segs || []).find((s) => s.start >= c.seg.end);
     return n ? { seg: n, start: n.start, end: Math.min(n.end, n.start + 180) } : null;
   }
