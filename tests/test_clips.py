@@ -67,3 +67,79 @@ async def test_clip_niet_in_de_toekomst_en_max_15_min(hass, tmp_path, monkeypatc
     import pytest
     with pytest.raises(ValueError):
         await m.start(1, "Opslag", now + 10, now + 60, [], "x")
+
+
+async def test_fout_in_een_deel_stopt_de_andere(hass, tmp_path, monkeypatch):
+    """Review: bij een fout liepen de andere delen door (ffmpeg en recorderplaatsen bleven bezet)."""
+    import asyncio
+    m = ClipManager(hass, VigiClient(None, "1.2.3.4", "u", "p"), tmp_path / "clips")
+    lopend = []
+
+    async def piece(self, clip, i, url, dur, target):
+        if i == 0:
+            return False, "deel kapot"
+        lopend.append(i)
+        try:
+            await asyncio.sleep(30)
+        finally:
+            lopend.remove(i)
+        return True, ""
+    monkeypatch.setattr(ClipManager, "_ffmpeg_piece", piece)
+    now = int(time.time())
+    clip = await m.start(1, "Opslag", now - 300, now - 60, [], "x")
+    await _wait(clip, 5)
+    await asyncio.sleep(0.1)
+    assert clip.state == "error" and lopend == []
+
+
+async def test_nieuw_venster_stopt_oud_en_krijgt_voorrang(hass, tmp_path, monkeypatch):
+    """Review: oude en vooraf opgehaalde vensters hielden de plaatsen bezet."""
+    import asyncio
+    m = ClipManager(hass, VigiClient(None, "1.2.3.4", "u", "p"), tmp_path / "clips")
+    volgorde = []
+    gate = asyncio.Event()
+
+    async def piece(self, clip, i, url, dur, target):
+        volgorde.append(clip.start)
+        await gate.wait()
+        clip.lengths[i] = dur
+        return True, ""
+    monkeypatch.setattr(ClipManager, "_ffmpeg_piece", piece)
+    monkeypatch.setattr(ClipManager, "_join", lambda self, c, w, o: asyncio.sleep(0, o.write_bytes(b"x")))
+    now = int(time.time())
+    oud = await m.start(1, "Opslag", now - 3000, now - 2700, [], "x")
+    pre = await m.start(1, "Opslag", now - 2000, now - 1700, [], "x", prefetch=True)
+    await asyncio.sleep(0.05)
+    assert volgorde.count(now - 3000) == 3 and now - 2000 not in volgorde   # vooraf ophalen wacht
+    nieuw = await m.start(1, "Opslag", now - 1000, now - 700, [], "x")
+    await asyncio.sleep(0.05)
+    assert oud.state == "error" and pre.state == "error"                    # oude en vooraf opgehaalde gestopt
+    assert volgorde[-3:] == [now - 1000] * 3                                 # nieuw venster meteen aan de beurt
+    gate.set()
+    await _wait(nieuw)
+    assert nieuw.state == "ready"
+
+
+async def test_twee_gelijktijdige_aanvragen_zelfde_venster(hass, tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(ClipManager, "_binary", lambda self: FAKE)
+    m = ClipManager(hass, VigiClient(None, "1.2.3.4", "u", "p"), tmp_path / "clips")
+    now = int(time.time())
+    a, b = await asyncio.gather(m.start(1, "Opslag", now - 100, now - 80, [], "x", prefetch=True),
+                                m.start(1, "Opslag", now - 100, now - 80, [], "y", prefetch=True))
+    assert a is b
+    await _wait(a)
+
+
+async def test_opruimen_spaart_lopende_en_recente(hass, tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr("custom_components.btechnics_vigi.clips.MAX_TOTAL_BYTES", 10)
+    m = ClipManager(hass, VigiClient(None, "1.2.3.4", "u", "p"), tmp_path / "clips")
+    (tmp_path / "clips").mkdir()
+    oud = tmp_path / "clips" / "oud.mp4"
+    oud.write_bytes(b"x" * 20)
+    os.utime(oud, (time.time() - 600, time.time() - 600))
+    nu = tmp_path / "clips" / "nu.mp4"
+    nu.write_bytes(b"x" * 20)
+    m._cleanup({"nu.mp4"})
+    assert not oud.exists() and nu.exists()

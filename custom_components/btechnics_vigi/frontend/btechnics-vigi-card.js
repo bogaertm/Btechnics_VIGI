@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.3.8";
+const VIGI_VERSION = "0.3.9";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -570,13 +570,17 @@ class BtechnicsVigiCard extends HTMLElement {
     const parts = (seg.parts || [[seg.start, seg.end]]).filter((p) => p[1] > t && p[0] < end);
     const clipP = this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: t, end, parts }).catch((e) => ({ state: "error", error: e.message || e.code }));
     const streamP = cont ? null : this._hass.callWS({ type: "btechnics_vigi/replay", channel: this._sel.channel, start: t, end }).catch((e) => ({ error: e.message || e.code }));
+    // review: een stream die niet meer nodig is meteen stoppen (anders bleef tot 60 s een recorderplaats bezet)
+    const dropStream = () => { if (streamP) streamP.then((st) => { if (st && st.url) this._hass.callWS({ type: "btechnics_vigi/replay/stop", url: st.url }).catch(() => {}); }); };
     const clip = await clipP;
-    if (req !== this._req) return;
+    if (req !== this._req) { dropStream(); return; }
     this._cur.clip = clip;
-    if (clip.state === "ready") { this._toFile(clip, t); return; }
+    // de server kort het einde in (max 15 min, niet later dan nu min 5 s): verder rekenen met dat einde (review)
+    if (clip.end && clip.end < this._cur.end) this._cur.end = clip.end;
+    if (clip.state === "ready") { dropStream(); this._toFile(clip, t); return; }
     if (cont) { this._pollClip(req); return; }
     const st = await streamP;
-    if (req !== this._req) return;
+    if (req !== this._req) { dropStream(); return; }
     if (st.url && this._cur.mode === "stream") {
       this._cur.streamUrl = st.url;
       const ok = await this._waitHls(st.url, () => req === this._req && this._cur && this._cur.mode === "stream",
@@ -618,7 +622,9 @@ class BtechnicsVigiCard extends HTMLElement {
   async _toFile(clip, clock) {
     const req = this._req;
     let signed;
-    try { signed = (await this._hass.callWS({ type: "auth/sign_path", path: `/api/btechnics_vigi/clip/${clip.clip_id}`, expires: 4 * 3600 })).path; }
+    // korte geldigheid (review: met een adres van 4 uur kon het bestand buiten het logboek om gekopieerd worden);
+    // verloopt het tijdens het kijken, dan vraagt de error-handler hieronder een nieuw adres
+    try { signed = (await this._hass.callWS({ type: "auth/sign_path", path: `/api/btechnics_vigi/clip/${clip.clip_id}`, expires: 1800 })).path; }
     catch (e) { this._setStatus(null, "Afspelen mislukt: " + (e.message || e.code)); return; }
     if (req !== this._req) return;
     this._stopStream();
@@ -626,10 +632,14 @@ class BtechnicsVigiCard extends HTMLElement {
     dropMedia(vb);
     const v = document.createElement("video");
     v.controls = true; v.muted = true; v.playsInline = true; v.preload = "auto";
+    // geen eigen downloadknop van de browser: downloaden enkel via de knop Download (komt in het logboek)
+    v.setAttribute("controlslist", "nodownload noplaybackrate"); v.disablePictureInPicture = true;
+    v.addEventListener("contextmenu", (e) => e.preventDefault());
     v.src = signed;
     vb.insertBefore(v, vb.firstChild);
     Object.assign(this._cur, { mode: "file", clip, video: v });
     v.addEventListener("loadedmetadata", () => {
+      v._ok = true;
       v.currentTime = Math.max(0, this._clockToMedia(clock));
       v.defaultPlaybackRate = this._speed;
       v.playbackRate = this._speed;
@@ -638,7 +648,18 @@ class BtechnicsVigiCard extends HTMLElement {
     // enkel de speler die nu speelt: een oude video meldt bij het loslaten (load) opnieuw 1x
     v.addEventListener("ratechange", () => { if (this._cur && this._cur.video === v && v.readyState > 0 && Math.abs(v.playbackRate - this._speed) > 0.01) { this._speed = v.playbackRate; this._markSpeed(); } });
     v.addEventListener("ended", () => { if (this._cur && this._cur.video === v) this._onEnded(); });
-    v.addEventListener("error", () => this._setStatus(null, "Deze browser kan het bestand niet afspelen (H.265). Probeer Chrome, Safari of de HA-app, of download het."));
+    v.addEventListener("error", () => {
+      if (!this._cur || this._cur.video !== v) return;
+      const code = v.error ? v.error.code : 0;
+      // al eens geladen: adres verlopen of verbinding weg, opnieuw ondertekenen en verder op dezelfde plaats
+      if (v._ok && (!this._resign || Date.now() - this._resign > 20000)) {
+        this._resign = Date.now();
+        this._toFile(this._cur.clip, this._clockNow());
+        return;
+      }
+      this._setStatus(null, code === 4 ? "Deze browser kan het bestand niet afspelen (H.265). Probeer Chrome, Safari of de HA-app, of download het."
+        : `Afspelen mislukt (fout ${code}). Kies het tijdstip opnieuw op de tijdlijn.`);
+    });
     this._setStatus(null, "Binnen: spoelen met de balk, snelheid kiezen, beeld per beeld bij pauze.");
     this._setControls();
     this._prefetchNext();
@@ -794,8 +815,9 @@ class BtechnicsVigiCard extends HTMLElement {
     // Vanaf 4x ook het venster daarna: de server haalt alles in volgorde binnen met max 3 replays (clips.py).
     let w = this._nextWindow();
     for (let i = 0; w && i < (this._speed >= 4 ? 2 : 1); i++, w = this._nextWindow(w)) {
+      if (w.end > Date.now() / 1000 - 5) break;   // nog niet opgenomen: niet vooraf ophalen (review)
       const parts = (w.seg.parts || [[w.seg.start, w.seg.end]]).filter((p) => p[1] > w.start && p[0] < w.end);
-      this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: w.start, end: w.end, parts }).catch(() => {});
+      this._hass.callWS({ type: "btechnics_vigi/clip/start", channel: this._sel.channel, start: w.start, end: w.end, parts, prefetch: true }).catch(() => {});
     }
   }
 
@@ -826,6 +848,8 @@ class BtechnicsVigiCard extends HTMLElement {
     const vb = sr && sr.getElementById("vbox");
     if (vb) dropMedia(vb);
     if (hide !== false) {
+      // speler dicht of andere camera/dag: binnenhalen stoppen, zodat de recorder vrij is (review 30/10/2026)
+      if (this._cur && this._hass) this._hass.callWS({ type: "btechnics_vigi/clip/cancel" }).catch(() => {});
       this._cur = null;
       const p = sr && sr.getElementById("player");
       if (p && hide) p.hidden = true;

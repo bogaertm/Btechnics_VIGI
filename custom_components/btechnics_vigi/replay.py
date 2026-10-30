@@ -21,11 +21,21 @@ _LOGGER = logging.getLogger(__name__)
 MAX_ACTIVE = 2
 
 
-async def _stop(s: Stream) -> None:
+async def _stop(s: Stream, forget: bool = True) -> None:
     try:
         await s.stop()
     except Exception:  # noqa: BLE001  opruimen mag nooit falen
         _LOGGER.debug("stream stoppen mislukt", exc_info=True)
+    if forget:
+        # create_stream zet elke stream in hass.data["stream"]["streams"] en stop() haalt hem er niet uit: zonder dit
+        # bleef per klik een Stream (met RTSP-adres) achter (review 30/10/2026). Interne lijst van HA, dus voorzichtig.
+        try:
+            from homeassistant.components.stream.const import ATTR_STREAMS, DOMAIN as STREAM_DOMAIN  # noqa: PLC0415
+            lst = s.hass.data.get(STREAM_DOMAIN, {}).get(ATTR_STREAMS)
+            if isinstance(lst, list) and s in lst:
+                lst.remove(s)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("stream uit de lijst halen mislukt", exc_info=True)
 
 
 class ReplayManager:
@@ -60,6 +70,10 @@ class ReplayManager:
             self._active.remove(item)
             await _stop(item[2])
         return bool(hit)
+
+    @property
+    def count(self) -> int:
+        return len(self._active)
 
     async def stop_all(self) -> None:
         while self._active:

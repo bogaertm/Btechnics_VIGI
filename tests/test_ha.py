@@ -101,9 +101,23 @@ async def test_ws_rechten(hass, via_fake, hass_ws_client, hass_admin_user):
                 {"type": f"{DOMAIN}/ice"},
                 {"type": f"{DOMAIN}/clip/start", "channel": 1, "start": 1793350000, "end": 1793350060},
                 {"type": f"{DOMAIN}/clip/status", "clip_id": "x"},
+                {"type": f"{DOMAIN}/clip/cancel"},
                 {"type": f"{DOMAIN}/probe", "path": "/openapi/module_list"},
                 {"type": f"{DOMAIN}/replay_probe", "channel": 1, "start": 1, "end": 2}):
         n += 1
         await ws.send_json({"id": n, **cmd})
         r = await ws.receive_json()
         assert not r["success"] and r["error"]["code"] == "unauthorized", cmd
+
+
+async def test_optie_aan_en_uit_zonder_vastlopen(hass, via_fake):
+    """Review 30/10/2026: unload rekende met de nieuwe opties en liep vast (FAILED_UNLOAD)."""
+    from homeassistant.config_entries import ConfigEntryState
+    await __import__("homeassistant.setup", fromlist=["x"]).async_setup_component(hass, "camera", {})
+    e = await _setup(hass)
+    hass.config_entries.async_update_entry(e, options={"camera_entities": True})
+    await hass.async_block_till_done()
+    assert e.state is ConfigEntryState.LOADED and len(hass.states.async_all("camera")) == 2
+    hass.config_entries.async_update_entry(e, options={"camera_entities": False})
+    await hass.async_block_till_done()
+    assert e.state is ConfigEntryState.LOADED

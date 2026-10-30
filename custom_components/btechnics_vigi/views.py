@@ -87,26 +87,33 @@ class ClipView(HomeAssistantView):
         if not clip or clip.state != "ready" or not await hass.async_add_executor_job(file_exists, clip.path):
             return web.Response(status=HTTPStatus.NOT_FOUND)
         headers = {"Cache-Control": "private, max-age=3600"}
+        user = request["hass_user"]
+        clip.used = time.time()
         if request.query.get("download"):
             fname = clip_filename(clip, dt_util.get_default_time_zone())
             headers["Content-Disposition"] = f'attachment; filename="{fname}"'
-            _log_download(hass, request["hass_user"], clip)
+            _log_download(hass, user, clip)
+        elif user.id not in clip.viewers:
+            # ook bekijken komt in het logboek (review: de browser kan het afgespeelde bestand ook bewaren)
+            clip.viewers.add(user.id)
+            _log_download(hass, user, clip, "bekeken")
         return web.FileResponse(clip.path, headers=headers)
 
 
-def _log_download(hass: HomeAssistant, user, clip) -> None:
+def _log_download(hass: HomeAssistant, user, clip, what: str = "gedownload") -> None:
     """Spoor van elke kopie van beelden (camerawet)."""
     tz = dt_util.get_default_time_zone()
     van = dt_util.as_local(dt_util.utc_from_timestamp(clip.start)).astimezone(tz)
     tot = dt_util.as_local(dt_util.utc_from_timestamp(clip.end)).astimezone(tz)
-    msg = (f"opname gedownload door {user.name}: {clip.channel_name} {van:%d/%m/%Y %H:%M:%S} tot {tot:%H:%M:%S}")
+    msg = (f"opname {what} door {user.name}: {clip.channel_name} {van:%d/%m/%Y %H:%M:%S} tot {tot:%H:%M:%S}")
     try:
         from homeassistant.components.logbook import async_log_entry  # noqa: PLC0415
         async_log_entry(hass, "Btechnics VIGI", msg, DOMAIN)
     except Exception:  # noqa: BLE001  logboek niet geladen: dan enkel in het HA-log
         pass
     import logging  # noqa: PLC0415
-    logging.getLogger(__name__).warning("Btechnics VIGI: %s", msg)
+    log = logging.getLogger(__name__)
+    (log.warning if what == "gedownload" else log.info)("Btechnics VIGI: %s", msg)
 
 
 @callback

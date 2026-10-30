@@ -1,6 +1,9 @@
 """WebSocket-commando's. Opnames enkel voor beheerders (keuze Matthias 30/10/2026, camerawet)."""
 from __future__ import annotations
 
+import time
+from urllib.parse import quote
+
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
@@ -30,6 +33,7 @@ def async_register_ws(hass: HomeAssistant) -> None:
         return
     hass.data[_REG] = True
     for f in (ws_channels, ws_days, ws_search, ws_replay, ws_replay_stop, ws_live, ws_webrtc, ws_ice, ws_clip_start, ws_clip_status,
+              ws_clip_cancel,
               ws_probe, ws_replay_probe):
         websocket_api.async_register_command(hass, f)
 
@@ -47,6 +51,14 @@ async def ws_channels(hass, connection, msg):
              for d in (c.data or [])]
     connection.send_result(msg["id"], {"entry_id": c.entry.entry_id, "host": c.client.host if admin else None,
                                        "channels": chans, "admin": admin})
+
+
+def _hide_pw(txt: str, pw: str) -> str:
+    """Wachtwoord ook in URL-gecodeerde vorm afschermen (review 30/10/2026)."""
+    for v in {pw, quote(pw, safe=""), quote(pw)}:
+        if v:
+            txt = txt.replace(v, "***")
+    return txt
 
 
 def _admin_coord(hass, connection, msg):
@@ -153,7 +165,7 @@ async def ws_webrtc(hass, connection, msg):
     try:
         answer = await c.live.webrtc_answer(msg["channel"], msg["offer"])
     except Exception as e:  # noqa: BLE001
-        connection.send_error(msg["id"], "webrtc_error", str(e)[:200].replace(c.client.password_for_diagnose(), "***"))
+        connection.send_error(msg["id"], "webrtc_error", _hide_pw(str(e), c.client.password_for_diagnose())[:200])
         return
     ice = []
     try:
@@ -189,7 +201,7 @@ async def ws_ice(hass, connection, msg):
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/clip/start", vol.Optional("entry_id"): str,
                                   vol.Required("channel"): int, vol.Required("start"): int, vol.Required("end"): int,
-                                  vol.Optional("parts"): [[int]]})
+                                  vol.Optional("parts"): [[int]], vol.Optional("prefetch", default=False): bool})
 @websocket_api.async_response
 async def ws_clip_start(hass, connection, msg):
     c = _admin_coord(hass, connection, msg)
@@ -199,7 +211,8 @@ async def ws_clip_start(hass, connection, msg):
     parts = [p for p in (msg.get("parts") or []) if len(p) == 2 and p[1] > p[0]]
     try:
         clip = await c.clips.start(msg["channel"], ch["name"] if ch else f"Kanaal {msg['channel']}",
-                                   msg["start"], msg["end"], parts, connection.user.name or connection.user.id)
+                                   msg["start"], msg["end"], parts, connection.user.name or connection.user.id,
+                                   prefetch=msg["prefetch"])
     except Exception as e:  # noqa: BLE001
         connection.send_error(msg["id"], "clip_error", str(e)[:200])
         return
@@ -217,7 +230,20 @@ async def ws_clip_status(hass, connection, msg):
     if not clip:
         connection.send_error(msg["id"], "not_found", "opname niet (meer) beschikbaar")
         return
+    clip.used = time.time()
     connection.send_result(msg["id"], clip.status())
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/clip/cancel", vol.Optional("entry_id"): str,
+                                  vol.Optional("keep", default=[]): [str]})
+@websocket_api.async_response
+async def ws_clip_cancel(hass, connection, msg):
+    """Speler gesloten of ander venster: binnenhalen van deze gebruiker stoppen (recorderplaatsen vrijgeven)."""
+    c = _admin_coord(hass, connection, msg)
+    if not c:
+        return
+    n = await c.clips.cancel_user(connection.user.name or connection.user.id, set(msg["keep"]))
+    connection.send_result(msg["id"], {"cancelled": n})
 
 
 READ_ONLY = ("/openapi/module_list", "/openapi/added_devices", "/openapi/disks", "/openapi/event_server",

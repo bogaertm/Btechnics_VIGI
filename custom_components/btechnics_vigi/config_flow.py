@@ -73,7 +73,9 @@ class VigiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            errors, n = await _test(self.hass, user_input)
+            other = [e for e in self._async_current_entries()
+                     if e.entry_id != entry.entry_id and e.unique_id == user_input[CONF_HOST]]
+            errors, n = ({"base": "already_configured"}, 0) if other else await _test(self.hass, user_input)
             if not errors:
                 return self.async_update_reload_and_abort(
                     entry, unique_id=user_input[CONF_HOST], data=user_input,

@@ -76,7 +76,8 @@ class VigiCoordinator(DataUpdateCoordinator[list[dict]]):
         self.client = client
         self.entry = entry
         self.replay = ReplayManager(hass, client)
-        self.clips = ClipManager(hass, client, Path(hass.config.path("btechnics_vigi_clips")))
+        self.clips = ClipManager(hass, client, Path(hass.config.path("btechnics_vigi_clips", entry.entry_id)),
+                                 streams=lambda: self.replay.count)
         self.snapshots = SnapshotCache(client)
         self.live = LiveManager(hass, client)
 
@@ -113,7 +114,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for ent in er.async_entries_for_config_entry(reg, entry.entry_id):
             if ent.domain == "camera":
                 reg.async_remove(ent.entity_id)
-    await hass.config_entries.async_forward_entry_setups(entry, _platforms(entry))
+    # bijhouden wat geladen is: bij unload na een optiewijziging zijn de opties al nieuw (review 30/10/2026)
+    coord.platforms = _platforms(entry)
+    await hass.config_entries.async_forward_entry_setups(entry, coord.platforms)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 
@@ -123,7 +126,8 @@ async def _async_reload(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    ok = await hass.config_entries.async_unload_platforms(entry, _platforms(entry))
+    coord0 = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    ok = await hass.config_entries.async_unload_platforms(entry, getattr(coord0, "platforms", None) or _platforms(entry))
     if ok:
         coord: VigiCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coord.replay.stop_all()

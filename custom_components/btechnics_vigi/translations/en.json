@@ -29,7 +29,8 @@
     },
     "error": {
       "invalid_auth": "Gebruiker of wachtwoord geweigerd door de recorder.",
-      "cannot_connect": "Recorder niet bereikbaar op poort 20443 (staat de OpenAPI aan?)."
+      "cannot_connect": "Recorder niet bereikbaar op poort 20443 (staat de OpenAPI aan?).",
+      "already_configured": "This recorder is already added."
     },
     "abort": {
       "already_configured": "Deze recorder is al toegevoegd.",
