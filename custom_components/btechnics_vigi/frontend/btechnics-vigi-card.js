@@ -5,7 +5,7 @@
  * afspeelsessies. Daarom: meteen kijken via een stream (HA) en tegelijk het stuk als mp4 binnenhalen (3 delen
  * tegelijk). Zodra het bestand klaar is, schakelt de speler over: spoelen, 0,5x tot 16x, beeld per beeld, download.
  */
-const VIGI_VERSION = "0.6.0";
+const VIGI_VERSION = "0.6.1";
 
 // Oude video's echt loslaten: een verwijderde <video> met src blijft anders het bestand verder binnenhalen
 // en neemt bandbreedte van het volgende venster (test 30/10/2026: volgend bestand pas na 90 s geladen).
@@ -678,6 +678,7 @@ class BtechnicsVigiCard extends HTMLElement {
       this._setStatus(this._cur.streamStart || cont ? null : "Verbinden met de recorder…",
         c.state === "joining" ? "Samenvoegen…" : cont ? `Volgend stuk binnenhalen ${pct} %, het speelt daarna vanzelf verder`
           : `Binnenhalen ${pct} % · spoelen, versnellen en downloaden zodra het binnen is`, c.progress);
+      this._dlButton();
       await new Promise((r) => setTimeout(r, 1000));
       if (req !== this._req) return;
       try { this._cur.clip = await this._hass.callWS({ type: "btechnics_vigi/clip/status", clip_id: c.clip_id }); }
@@ -688,8 +689,12 @@ class BtechnicsVigiCard extends HTMLElement {
     if (c && c.state === "ready") {
       // verder op de plaats waar de stream nu is
       const at = this._cur.streamStart ? Math.min(this._cur.end - 1, this._cur.start + (Date.now() - this._cur.streamStart) / 1000) : this._cur.start;
-      this._toFile(c, at);
+      const want = this._cur.wantDl;
+      this._cur.wantDl = false;
+      await this._toFile(c, at);
+      if (want && req === this._req) this._download();
     } else {
+      this._dlButton();
       this._setStatus(null, `Binnenhalen mislukt: ${esc((c && c.error) || "onbekend")}. Kijken kan wel, spoelen en downloaden niet.`);
     }
   }
@@ -801,7 +806,8 @@ class BtechnicsVigiCard extends HTMLElement {
   _setControls() {
     const file = this._cur && this._cur.mode === "file";
     const $ = (id) => this.shadowRoot.getElementById(id);
-    ["b10", "f10", "pp", "fb", "ff", "dl"].forEach((id) => { if ($(id)) $(id).disabled = !file; });
+    ["b10", "f10", "pp", "fb", "ff"].forEach((id) => { if ($(id)) $(id).disabled = !file; });
+    this._dlButton();
     this.shadowRoot.querySelectorAll(".sp").forEach((b) => { b.disabled = !file; });
     this._markSpeed();
   }
@@ -948,8 +954,24 @@ class BtechnicsVigiCard extends HTMLElement {
     }
   }
 
+  // Download kan ook tijdens het binnenhalen aangevraagd worden: dan start het vanzelf zodra het stuk binnen is
+  // (vraag Matthias 30/10/2026, "waarom kan ik niet downloaden" bij 59 %)
+  _dlButton() {
+    const b = this.shadowRoot.getElementById("dl");
+    if (!b) return;
+    const cur = this._cur, c = cur && cur.clip;
+    const fetching = !!(c && c.clip_id && ["fetching", "joining"].includes(c.state));
+    b.disabled = !(cur && (cur.mode === "file" || fetching)) || !!(cur && cur.wantDl && fetching);
+    b.textContent = fetching ? (cur.wantDl ? `⬇ Start bij 100 % (${Math.round((c.progress || 0) * 100)} %)` : `⬇ Download (${Math.round((c.progress || 0) * 100)} %)`) : "⬇ Download";
+  }
+
   async _download() {
-    const c = this._cur && this._cur.clip;
+    const cur = this._cur, c = cur && cur.clip;
+    if (c && c.clip_id && ["fetching", "joining"].includes(c.state)) {
+      cur.wantDl = true; this._dlButton();
+      this._setStatus(null, "De download start vanzelf zodra het stuk volledig binnen is. Laat deze pagina open.");
+      return;
+    }
     if (!c || c.state !== "ready") return;
     try {
       const { path } = await this._hass.callWS({ type: "auth/sign_path", path: `/api/btechnics_vigi/clip/${c.clip_id}?download=1`, expires: 600 });
@@ -998,7 +1020,7 @@ ${admin ? `<h4>Opnames terugkijken</h4>
 <h4>Bediening</h4>
 <ul><li>Snelheid 0.5x tot 16x. Van buitenaf (via internet) kan 16x even haperen; 8x of lager loopt vlot.</li>
 <li><kbd>spatie</kbd> pauze, <kbd>←</kbd> <kbd>→</kbd> 10 s terug of verder, beeld per beeld met de knoppen bij pauze.</li>
-<li>Download geeft het stuk als mp4-bestand (H.265). Elke download en elke keer bekijken komt in het logboek van Home Assistant.</li></ul>
+<li>Download geeft het stuk als mp4-bestand (H.265). Klik je tijdens het binnenhalen, dan start de download vanzelf zodra het stuk binnen is. Elke download en elke keer bekijken komt in het logboek van Home Assistant.</li></ul>
 <h4>Meldingen</h4>
 <ul><li>De recorder stuurt beweging, persoon en voertuig door. Ze staan als bolletjes boven de tijdlijn: <i class="ev k-beweging"></i> beweging, <i class="ev k-persoon"></i> persoon, <i class="ev k-voertuig"></i> voertuig, <i class="ev k-andere"></i> andere.</li>
 <li>In een uur staan de meldingen ook als lijst: klik erop om af te spelen vanaf 5 s ervoor.</li>
